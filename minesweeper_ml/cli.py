@@ -197,6 +197,9 @@ def evaluate_ml_bot_games(
         },
         "constraint_search_nodes": 0,
         "constraint_overflows": 0,
+        "lookahead_decisions": 0,
+        "lookahead_search_nodes": 0,
+        "lookahead_budget_exhaustions": 0,
         "median_uncertain_move_ms": 0.0,
         "fallback_move_rate": 0.0,
     }
@@ -242,6 +245,15 @@ def evaluate_ml_bot_games(
         ]
         summary["constraint_overflows"] += bot.strategy_stats[
             "constraint_overflows"
+        ]
+        summary["lookahead_decisions"] += bot.strategy_stats[
+            "lookahead_decisions"
+        ]
+        summary["lookahead_search_nodes"] += bot.strategy_stats[
+            "lookahead_search_nodes"
+        ]
+        summary["lookahead_budget_exhaustions"] += bot.strategy_stats[
+            "lookahead_budget_exhaustions"
         ]
         total_safe_moves += safe_moves
         if game.state == GameState.WON:
@@ -289,6 +301,16 @@ def print_evaluation_summary(summary) -> None:
     )
     print(
         f"{summary['fallback_move_rate']:.2%} uncertain-move fallback rate"
+    )
+    exhaustion_label = (
+        "budget exhaustion"
+        if summary["lookahead_budget_exhaustions"] == 1
+        else "budget exhaustions"
+    )
+    print(
+        f"{summary['lookahead_decisions']} lookahead decisions, "
+        f"{summary['lookahead_search_nodes']} lookahead search nodes, "
+        f"{summary['lookahead_budget_exhaustions']} {exhaustion_label}"
     )
 
 
