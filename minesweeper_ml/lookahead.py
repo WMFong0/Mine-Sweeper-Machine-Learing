@@ -20,6 +20,25 @@ class LookaheadEvaluation:
     valid: bool
 
 
+def poisson_binomial_distribution(
+    probabilities: list[float],
+) -> dict[int, float]:
+    distribution = {0: 1.0}
+    for probability in probabilities:
+        updated: dict[int, float] = {}
+        for mine_count, weight in distribution.items():
+            updated[mine_count] = (
+                updated.get(mine_count, 0.0)
+                + weight * (1.0 - probability)
+            )
+            updated[mine_count + 1] = (
+                updated.get(mine_count + 1, 0.0)
+                + weight * probability
+            )
+        distribution = updated
+    return distribution
+
+
 def evaluate_safe_click(
     candidate: Coordinate,
     *,
@@ -33,17 +52,12 @@ def evaluate_safe_click(
     max_constraint_nodes: int,
     max_total_search_nodes: int,
     min_outcome_probability: float,
-    outcome_correlation_strength: float = 1.0,
 ) -> LookaheadEvaluation:
     if max_total_search_nodes <= 0:
         raise ValueError("max_total_search_nodes must be greater than zero.")
     if not 0.0 <= min_outcome_probability <= 1.0:
         raise ValueError(
             "min_outcome_probability must be between zero and one."
-        )
-    if not 0.0 <= outcome_correlation_strength <= 1.0:
-        raise ValueError(
-            "outcome_correlation_strength must be between zero and one."
         )
 
     safe_constraints = [
@@ -58,7 +72,6 @@ def evaluate_safe_click(
         prior_strength=prior_strength,
         max_search_nodes=max_constraint_nodes,
         max_total_search_nodes=max_total_search_nodes,
-        query_cells=hidden_neighbors,
     )
     search_nodes = conditioned.search_nodes
     if (
@@ -76,24 +89,11 @@ def evaluate_safe_click(
         model_mine_probabilities,
         conditioned.mine_probabilities,
     )
-    exact_outcome_distribution = (
-        conditioned.query_mine_count_distribution
-    )
-    if exact_outcome_distribution is None:
-        return _invalid_evaluation(
-            search_nodes,
-            budget_exhausted=False,
-        )
-    independent_outcome_distribution = (
-        _independent_outcome_distribution(
-            hidden_neighbors,
-            conditioned_probabilities,
-        )
-    )
-    outcome_distribution = _blend_outcome_distributions(
-        exact_outcome_distribution,
-        independent_outcome_distribution,
-        correlation_strength=outcome_correlation_strength,
+    outcome_distribution = poisson_binomial_distribution(
+        [
+            conditioned_probabilities[neighbor]
+            for neighbor in sorted(hidden_neighbors, key=_coordinate_sort_key)
+        ]
     )
     scored_cells = hidden_cells - {candidate}
     baseline_forced = _forced_cells(
@@ -236,67 +236,6 @@ def _binary_entropy(probability: float) -> float:
     )
 
 
-def _poisson_binomial_distribution(
-    probabilities: list[float],
-) -> dict[int, float]:
-    distribution = {0: 1.0}
-    for probability in probabilities:
-        updated: dict[int, float] = {}
-        for mine_count, weight in distribution.items():
-            updated[mine_count] = (
-                updated.get(mine_count, 0.0)
-                + weight * (1.0 - probability)
-            )
-            updated[mine_count + 1] = (
-                updated.get(mine_count + 1, 0.0)
-                + weight * probability
-            )
-        distribution = updated
-    return distribution
-
-
-def _independent_outcome_distribution(
-    hidden_neighbors: frozenset[Coordinate],
-    mine_probabilities: dict[Coordinate, float],
-) -> dict[int, float]:
-    return _poisson_binomial_distribution(
-        [
-            mine_probabilities[neighbor]
-            for neighbor in sorted(
-                hidden_neighbors,
-                key=lambda coordinate: (
-                    coordinate[1],
-                    coordinate[0],
-                ),
-            )
-        ]
-    )
-
-
-def _blend_outcome_distributions(
-    exact_distribution: dict[int, float],
-    independent_distribution: dict[int, float],
-    *,
-    correlation_strength: float,
-) -> dict[int, float]:
-    feasible_independent = {
-        mine_count: independent_distribution.get(mine_count, 0.0)
-        for mine_count in exact_distribution
-    }
-    independent_total = sum(feasible_independent.values())
-    if independent_total <= 0.0:
-        return exact_distribution
-
-    return {
-        mine_count: (
-            correlation_strength * exact_probability
-            + (1.0 - correlation_strength)
-            * feasible_independent[mine_count]
-        )
-        for mine_count, exact_probability in exact_distribution.items()
-    }
-
-
 def _invalid_evaluation(
     search_nodes: int,
     *,
@@ -310,3 +249,10 @@ def _invalid_evaluation(
         budget_exhausted=budget_exhausted,
         valid=False,
     )
+
+
+def _coordinate_sort_key(
+    coordinate: Coordinate,
+) -> tuple[int, int]:
+    x, y = coordinate
+    return y, x

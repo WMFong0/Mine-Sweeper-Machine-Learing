@@ -93,7 +93,6 @@ class MLMinesweeperBotTest(unittest.TestCase):
         self.assertEqual(4, bot.lookahead_max_candidates)
         self.assertEqual(100_000, bot.lookahead_max_nodes)
         self.assertEqual(1e-6, bot.lookahead_min_outcome_probability)
-        self.assertEqual(1.0, bot.outcome_correlation_strength)
 
     def test_combines_model_confidence_with_clue_safety(self):
         model = ScoreMapPredictionModel(
@@ -183,20 +182,6 @@ class MLMinesweeperBotTest(unittest.TestCase):
                 1,
                 model,
                 lookahead_min_outcome_probability=1.1,
-            )
-        with self.assertRaises(ValueError):
-            MLMinesweeperBot(
-                1,
-                1,
-                model,
-                outcome_correlation_strength=-0.1,
-            )
-        with self.assertRaises(ValueError):
-            MLMinesweeperBot(
-                1,
-                1,
-                model,
-                outcome_correlation_strength=1.1,
             )
 
     def test_effective_tie_margin_shrinks_in_the_endgame(self):
