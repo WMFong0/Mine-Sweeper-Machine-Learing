@@ -113,7 +113,10 @@ def evaluate_safe_click(
     for mine_count, outcome_probability in sorted(
         outcome_distribution.items()
     ):
-        if outcome_probability < min_outcome_probability:
+        if (
+            outcome_probability <= 0.0
+            or outcome_probability < min_outcome_probability
+        ):
             continue
 
         remaining_node_budget = max_total_search_nodes - search_nodes

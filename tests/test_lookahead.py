@@ -88,6 +88,65 @@ class PosteriorLookaheadTest(unittest.TestCase):
         self.assertTrue(result.budget_exhausted)
         self.assertLessEqual(result.search_nodes, 1)
 
+    def test_per_box_overflow_is_not_reported_as_budget_exhaustion(self):
+        candidate = (0, 0)
+
+        result = evaluate_safe_click(
+            candidate,
+            hidden_neighbors=frozenset({(1, 0)}),
+            has_known_mine_neighbor=False,
+            constraints=[],
+            hidden_cells={candidate, (1, 0)},
+            model_mine_probabilities={
+                candidate: 0.5,
+                (1, 0): 0.5,
+            },
+            remaining_mines=None,
+            prior_strength=1.0,
+            max_constraint_nodes=1,
+            max_total_search_nodes=100,
+            min_outcome_probability=1e-6,
+        )
+
+        self.assertFalse(result.valid)
+        self.assertFalse(result.budget_exhausted)
+        self.assertEqual(1, result.search_nodes)
+
+    def test_zero_probability_outcomes_never_consume_search_budget(self):
+        candidate = (0, 0)
+        neighbor = (1, 0)
+        options = {
+            "hidden_neighbors": frozenset({neighbor}),
+            "has_known_mine_neighbor": False,
+            "constraints": [(frozenset({neighbor}), 0)],
+            "hidden_cells": {candidate, neighbor},
+            "model_mine_probabilities": {
+                candidate: 0.5,
+                neighbor: 0.5,
+            },
+            "remaining_mines": None,
+            "prior_strength": 1.0,
+            "max_constraint_nodes": 1_000,
+            "max_total_search_nodes": 1_000,
+        }
+
+        zero_threshold = evaluate_safe_click(
+            candidate,
+            min_outcome_probability=0.0,
+            **options,
+        )
+        positive_threshold = evaluate_safe_click(
+            candidate,
+            min_outcome_probability=1e-6,
+            **options,
+        )
+
+        self.assertTrue(zero_threshold.valid)
+        self.assertEqual(
+            positive_threshold.search_nodes,
+            zero_threshold.search_nodes,
+        )
+
     def test_known_neighboring_mine_prevents_zero_region_score(self):
         candidate = (0, 0)
 

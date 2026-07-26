@@ -507,6 +507,9 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
                 : self.lookahead_max_candidates
             ]
         ]
+        if len(shortlisted_moves) == 1:
+            return shortlisted_moves[0]
+
         evaluations = {}
         remaining_node_budget = self.lookahead_max_nodes
         budget_exhausted = False

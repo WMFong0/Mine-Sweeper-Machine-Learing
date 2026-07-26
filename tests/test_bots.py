@@ -371,6 +371,29 @@ class MLMinesweeperBotTest(unittest.TestCase):
         self.assertEqual((1, 0), move)
         scorer.assert_not_called()
 
+    def test_one_candidate_limit_avoids_unnecessary_lookahead(self):
+        bot = MLMinesweeperBot(
+            width=2,
+            height=1,
+            ml_model=ScoreMapPredictionModel([[0.5, 0.5]]),
+            lookahead_max_candidates=1,
+        )
+        visible_map = [["-", "-"]]
+
+        with patch("minesweeper_ml.bots.evaluate_safe_click") as scorer:
+            move = bot._select_posterior_move(
+                {(0, 0): 0.10, (1, 0): 0.105},
+                visible_map=visible_map,
+                deduced_mines=set(),
+                constraints=[],
+                hidden_cells={(0, 0), (1, 0)},
+                model_mine_probabilities={(0, 0): 0.5, (1, 0): 0.5},
+                remaining_mines=None,
+            )
+
+        self.assertEqual((0, 0), move)
+        scorer.assert_not_called()
+
     def test_lookahead_budget_exhaustion_falls_back_deterministically(self):
         bot = MLMinesweeperBot(
             width=4,
@@ -419,6 +442,87 @@ class MLMinesweeperBotTest(unittest.TestCase):
         self.assertEqual(
             200_000,
             bot.strategy_stats["lookahead_search_nodes"],
+        )
+
+    def test_partial_budget_exhaustion_keeps_completed_candidate_score(self):
+        bot = MLMinesweeperBot(
+            width=2,
+            height=1,
+            ml_model=ScoreMapPredictionModel([[0.5, 0.5]]),
+            lookahead_max_nodes=100,
+        )
+        visible_map = [["-", "-"]]
+
+        with patch(
+            "minesweeper_ml.bots.evaluate_safe_click",
+            side_effect=[
+                _lookahead_evaluation(
+                    expected_forced_cells=1.0,
+                    search_nodes=90,
+                ),
+                _lookahead_evaluation(
+                    valid=False,
+                    budget_exhausted=True,
+                    search_nodes=10,
+                ),
+            ],
+        ):
+            move = bot._select_posterior_move(
+                {(0, 0): 0.10, (1, 0): 0.10},
+                visible_map=visible_map,
+                deduced_mines=set(),
+                constraints=[],
+                hidden_cells={(0, 0), (1, 0)},
+                model_mine_probabilities={(0, 0): 0.5, (1, 0): 0.5},
+                remaining_mines=None,
+            )
+
+        self.assertEqual((0, 0), move)
+        self.assertEqual(1, bot.strategy_stats["lookahead_decisions"])
+        self.assertEqual(
+            1,
+            bot.strategy_stats["lookahead_budget_exhaustions"],
+        )
+        self.assertEqual(100, bot.strategy_stats["lookahead_search_nodes"])
+
+    def test_real_lookahead_changes_end_to_end_move_selection(self):
+        scores = [
+            [0.301625, 0.788729, 0.383552, 0.533665, 0.656705],
+            [0.701596, 0.248279, 0.827334, 0.451968, 0.670399],
+            [0.421937, 0.593413, 0.742202, 0.223084, 0.659523],
+            [0.631690, 0.218985, 0.252209, 0.359092, 0.805340],
+            [0.596335, 0.713219, 0.216447, 0.323539, 0.395663],
+        ]
+        visible_map = [
+            [2, "-", "-", "-", "-"],
+            ["-", "-", "-", "-", "-"],
+            ["-", "-", "-", "-", "-"],
+            ["-", "-", "-", 1, "-"],
+            ["-", "-", "-", "-", "-"],
+        ]
+        baseline = MLMinesweeperBot(
+            5,
+            5,
+            ScoreMapPredictionModel(scores),
+            mine_count=5,
+            model_prior_strength=0.75,
+            lookahead_max_candidates=0,
+        )
+        lookahead = MLMinesweeperBot(
+            5,
+            5,
+            ScoreMapPredictionModel(scores),
+            mine_count=5,
+            model_prior_strength=0.75,
+            lookahead_max_candidates=4,
+        )
+
+        self.assertEqual((2, 2), baseline.get_next_move(visible_map))
+        self.assertEqual((4, 3), lookahead.get_next_move(visible_map))
+        self.assertEqual(1, lookahead.strategy_stats["lookahead_decisions"])
+        self.assertGreater(
+            lookahead.strategy_stats["lookahead_search_nodes"],
+            0,
         )
 
     def test_global_mine_budget_records_a_certain_safe_cell_as_a_deduction(self):
