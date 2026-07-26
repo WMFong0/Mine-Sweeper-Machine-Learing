@@ -3,9 +3,10 @@ from __future__ import annotations
 from collections import deque
 from typing import Protocol
 
-from minesweeper_ml.constraints import infer_mine_probabilities
+from minesweeper_ml.constraints import Constraint, infer_mine_probabilities
 from minesweeper_ml.data import encode_board_features, encode_board_state
 from minesweeper_ml.game import Cell, Coordinate
+from minesweeper_ml.lookahead import evaluate_safe_click
 
 
 class PredictionModel(Protocol):
@@ -189,6 +190,9 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
         model_prior_strength: float = 0.5,
         model_weight: float = 0.6,
         tie_margin: float = 0.01,
+        lookahead_max_candidates: int = 4,
+        lookahead_max_nodes: int = 100_000,
+        lookahead_min_outcome_probability: float = 1e-6,
         cnn_input: bool = True,
     ):
         super().__init__(width, height)
@@ -202,12 +206,27 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
             raise ValueError("max_constraint_nodes must be greater than zero.")
         if model_prior_strength <= 0.0:
             raise ValueError("model_prior_strength must be greater than zero.")
+        if lookahead_max_candidates < 0:
+            raise ValueError(
+                "lookahead_max_candidates must be non-negative."
+            )
+        if lookahead_max_nodes <= 0:
+            raise ValueError("lookahead_max_nodes must be greater than zero.")
+        if not 0.0 <= lookahead_min_outcome_probability <= 1.0:
+            raise ValueError(
+                "lookahead_min_outcome_probability must be between zero and one."
+            )
         self.ml_model = ml_model
         self.mine_count = mine_count
         self.max_constraint_nodes = max_constraint_nodes
         self.model_prior_strength = model_prior_strength
         self.model_weight = model_weight
         self.tie_margin = tie_margin
+        self.lookahead_max_candidates = lookahead_max_candidates
+        self.lookahead_max_nodes = lookahead_max_nodes
+        self.lookahead_min_outcome_probability = (
+            lookahead_min_outcome_probability
+        )
         self.cnn_input = cnn_input
         self.last_move_strategy: str | None = None
         self.strategy_stats = {
@@ -217,6 +236,9 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
             "fallback": 0,
             "constraint_search_nodes": 0,
             "constraint_overflows": 0,
+            "lookahead_decisions": 0,
+            "lookahead_search_nodes": 0,
+            "lookahead_budget_exhaustions": 0,
         }
 
     def get_next_move(self, visible_map: list[list[Cell]]) -> Coordinate | None:
@@ -249,7 +271,7 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
                     1.0 - float(predictions[cell[1] * self.width + cell[0]]),
                 ),
             )
-            for cell in constrained_cells
+            for cell in hidden_cells
         }
         remaining_mines = (
             None
@@ -293,10 +315,14 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
                 )
                 return self._record_move(move, "deduction")
             if posterior_candidates and inference.overflowed_boxes == 0:
-                move = self._lowest_probability_move(
+                move = self._select_posterior_move(
                     posterior_candidates,
-                    visible_map,
-                    self.deduced_mines,
+                    visible_map=visible_map,
+                    deduced_mines=self.deduced_mines,
+                    constraints=constraints,
+                    hidden_cells=hidden_cells,
+                    model_mine_probabilities=model_mine_probabilities,
+                    remaining_mines=remaining_mines,
                 )
                 strategy = "box" if move in constrained_cells else "unconstrained"
                 return self._record_move(move, strategy)
@@ -419,10 +445,14 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
         deduced_mines: set[Coordinate],
     ) -> Coordinate:
         lowest_probability = min(mine_probabilities.values())
+        hidden_count = len(
+            self._available_moves(visible_map, deduced_mines)
+        )
+        effective_margin = self._effective_tie_margin(hidden_count)
         near_best = [
             move
             for move, mine_probability in mine_probabilities.items()
-            if mine_probability - lowest_probability <= self.tie_margin
+            if mine_probability - lowest_probability <= effective_margin
         ]
         return min(
             near_best,
@@ -431,6 +461,147 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
                 move[1],
                 move[0],
             ),
+        )
+
+    def _select_posterior_move(
+        self,
+        mine_probabilities: dict[Coordinate, float],
+        *,
+        visible_map: list[list[Cell]],
+        deduced_mines: set[Coordinate],
+        constraints: list[Constraint],
+        hidden_cells: set[Coordinate],
+        model_mine_probabilities: dict[Coordinate, float],
+        remaining_mines: int | None,
+    ) -> Coordinate:
+        lowest_probability = min(mine_probabilities.values())
+        unresolved_hidden = hidden_cells - deduced_mines
+        effective_margin = self._effective_tie_margin(
+            len(unresolved_hidden)
+        )
+        eligible_candidates = sorted(
+            (
+                (mine_probability, move)
+                for move, mine_probability in mine_probabilities.items()
+                if mine_probability - lowest_probability <= effective_margin
+            ),
+            key=lambda item: (
+                item[0],
+                item[1][1],
+                item[1][0],
+            ),
+        )
+        if (
+            self.lookahead_max_candidates == 0
+            or len(eligible_candidates) <= 1
+        ):
+            return self._lowest_probability_move(
+                mine_probabilities,
+                visible_map,
+                deduced_mines,
+            )
+
+        shortlisted_moves = [
+            move
+            for _, move in eligible_candidates[
+                : self.lookahead_max_candidates
+            ]
+        ]
+        evaluations = {}
+        remaining_node_budget = self.lookahead_max_nodes
+        budget_exhausted = False
+        has_valid_evaluation = False
+
+        for candidate_index, move in enumerate(shortlisted_moves):
+            if remaining_node_budget <= 0:
+                budget_exhausted = True
+                break
+
+            hidden_neighbors = frozenset(
+                neighbor
+                for neighbor in self._neighbors(*move)
+                if visible_map[neighbor[1]][neighbor[0]] == "-"
+                and neighbor not in deduced_mines
+            )
+            has_known_mine_neighbor = any(
+                neighbor in deduced_mines
+                for neighbor in self._neighbors(*move)
+            )
+            evaluation = evaluate_safe_click(
+                move,
+                hidden_neighbors=hidden_neighbors,
+                has_known_mine_neighbor=has_known_mine_neighbor,
+                constraints=constraints,
+                hidden_cells=hidden_cells,
+                model_mine_probabilities=model_mine_probabilities,
+                remaining_mines=remaining_mines,
+                prior_strength=self.model_prior_strength,
+                max_constraint_nodes=self.max_constraint_nodes,
+                max_total_search_nodes=remaining_node_budget,
+                min_outcome_probability=(
+                    self.lookahead_min_outcome_probability
+                ),
+            )
+            evaluations[move] = evaluation
+            remaining_node_budget -= evaluation.search_nodes
+            self.strategy_stats[
+                "lookahead_search_nodes"
+            ] += evaluation.search_nodes
+            has_valid_evaluation = (
+                has_valid_evaluation or evaluation.valid
+            )
+            if evaluation.budget_exhausted:
+                budget_exhausted = True
+                break
+            if (
+                remaining_node_budget <= 0
+                and candidate_index + 1 < len(shortlisted_moves)
+            ):
+                budget_exhausted = True
+                break
+
+        if budget_exhausted:
+            self.strategy_stats["lookahead_budget_exhaustions"] += 1
+        if has_valid_evaluation:
+            self.strategy_stats["lookahead_decisions"] += 1
+
+        def selection_key(move: Coordinate):
+            evaluation = evaluations.get(move)
+            expected_forced_cells = (
+                evaluation.expected_forced_cells
+                if evaluation is not None and evaluation.valid
+                else 0.0
+            )
+            expected_entropy_reduction = (
+                evaluation.expected_entropy_reduction
+                if evaluation is not None and evaluation.valid
+                else 0.0
+            )
+            zero_region_probability = (
+                evaluation.zero_region_probability
+                if evaluation is not None and evaluation.valid
+                else 0.0
+            )
+            return (
+                -expected_forced_cells,
+                -expected_entropy_reduction,
+                -zero_region_probability,
+                -self._information_gain(
+                    move,
+                    visible_map,
+                    deduced_mines,
+                ),
+                move[1],
+                move[0],
+            )
+
+        return min(shortlisted_moves, key=selection_key)
+
+    def _effective_tie_margin(self, hidden_count: int) -> float:
+        hidden_fraction = hidden_count / (self.width * self.height)
+        return self.tie_margin * max(
+            0.25,
+            min(1.0, hidden_fraction),
         )
 
     def _record_move(self, move: Coordinate, strategy: str) -> Coordinate:
