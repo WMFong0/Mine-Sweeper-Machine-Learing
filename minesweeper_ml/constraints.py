@@ -32,6 +32,7 @@ class MineProbabilityInference:
     globally_coupled: bool
     overflowed_boxes: int
     search_nodes: int
+    budget_exhausted: bool = False
 
 
 def build_constraint_boxes(constraints: list[Constraint]) -> list[ConstraintBox]:
@@ -108,10 +109,10 @@ def enumerate_constraint_box(
     def visit(position: int) -> None:
         nonlocal assignment_count, search_nodes, overflowed
         nonlocal log_weight_scale, has_raw_weight
-        search_nodes += 1
-        if search_nodes > max_search_nodes:
+        if search_nodes >= max_search_nodes:
             overflowed = True
             return
+        search_nodes += 1
 
         if position == len(variables):
             assignment_count += 1
@@ -221,7 +222,11 @@ def infer_mine_probabilities(
     remaining_mines: int | None,
     prior_strength: float,
     max_search_nodes: int,
+    max_total_search_nodes: int | None = None,
 ) -> MineProbabilityInference:
+    if max_total_search_nodes is not None and max_total_search_nodes <= 0:
+        raise ValueError("max_total_search_nodes must be greater than zero.")
+
     if any(not cells and mine_count != 0 for cells, mine_count in constraints):
         return MineProbabilityInference(
             mine_probabilities={},
@@ -236,16 +241,37 @@ def infer_mine_probabilities(
     local_probabilities: dict[Coordinate, float] = {}
     overflowed_boxes = 0
     search_nodes = 0
+    budget_exhausted = False
 
     for box in boxes:
+        remaining_total_nodes = (
+            None
+            if max_total_search_nodes is None
+            else max_total_search_nodes - search_nodes
+        )
+        if remaining_total_nodes is not None and remaining_total_nodes <= 0:
+            budget_exhausted = True
+            break
+        enumeration_node_limit = (
+            max_search_nodes
+            if remaining_total_nodes is None
+            else min(max_search_nodes, remaining_total_nodes)
+        )
+        limited_by_total_budget = (
+            remaining_total_nodes is not None
+            and remaining_total_nodes <= max_search_nodes
+        )
         enumeration = enumerate_constraint_box(
             box,
             model_mine_probabilities,
             prior_strength=prior_strength,
-            max_search_nodes=max_search_nodes,
+            max_search_nodes=enumeration_node_limit,
         )
         search_nodes += enumeration.search_nodes
         if enumeration.overflowed:
+            if limited_by_total_budget:
+                budget_exhausted = True
+                break
             overflowed_boxes += 1
             continue
         if enumeration.assignment_count == 0:
@@ -258,6 +284,16 @@ def infer_mine_probabilities(
             )
         enumerations.append(enumeration)
         local_probabilities.update(enumeration.mine_probabilities)
+
+    if budget_exhausted:
+        return MineProbabilityInference(
+            mine_probabilities=local_probabilities,
+            consistent=True,
+            globally_coupled=False,
+            overflowed_boxes=overflowed_boxes,
+            search_nodes=search_nodes,
+            budget_exhausted=True,
+        )
 
     if overflowed_boxes or remaining_mines is None:
         return MineProbabilityInference(

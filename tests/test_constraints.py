@@ -85,6 +85,40 @@ class ConstraintBoxTest(unittest.TestCase):
         self.assertAlmostEqual(1.0, result.mine_probabilities[middle])
         self.assertAlmostEqual(0.0, result.mine_probabilities[last])
         self.assertAlmostEqual(0.0, result.mine_probabilities[unconstrained])
+        self.assertFalse(result.budget_exhausted)
+
+    def test_total_search_budget_stops_conditional_inference(self):
+        cells = {(0, 0), (1, 0), (3, 0), (4, 0)}
+
+        result = infer_mine_probabilities(
+            [
+                (frozenset({(0, 0), (1, 0)}), 1),
+                (frozenset({(3, 0), (4, 0)}), 1),
+            ],
+            hidden_cells=cells,
+            model_mine_probabilities={cell: 0.5 for cell in cells},
+            remaining_mines=2,
+            prior_strength=1.0,
+            max_search_nodes=100,
+            max_total_search_nodes=4,
+        )
+
+        self.assertTrue(result.budget_exhausted)
+        self.assertLessEqual(result.search_nodes, 4)
+        self.assertEqual(0, result.overflowed_boxes)
+        self.assertFalse(result.globally_coupled)
+
+    def test_rejects_non_positive_total_search_budget(self):
+        with self.assertRaises(ValueError):
+            infer_mine_probabilities(
+                [],
+                hidden_cells=set(),
+                model_mine_probabilities={},
+                remaining_mines=0,
+                prior_strength=1.0,
+                max_search_nodes=100,
+                max_total_search_nodes=0,
+            )
 
     def test_overflow_keeps_completed_local_boxes_without_global_coupling(self):
         solved = (0, 0)
