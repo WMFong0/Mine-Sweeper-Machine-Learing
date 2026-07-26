@@ -292,7 +292,6 @@ def _blend_outcome_distributions(
             correlation_strength * exact_probability
             + (1.0 - correlation_strength)
             * feasible_independent[mine_count]
-            / independent_total
         )
         for mine_count, exact_probability in exact_distribution.items()
     }

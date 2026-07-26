@@ -1,6 +1,7 @@
 import unittest
 
 from minesweeper_ml.lookahead import (
+    _blend_outcome_distributions,
     _independent_outcome_distribution,
     evaluate_safe_click,
 )
@@ -27,6 +28,29 @@ class PosteriorLookaheadTest(unittest.TestCase):
                 1: 0.398,
                 2: 0.092,
                 3: 0.006000000000000001,
+            },
+            distribution,
+        )
+
+    def test_zero_correlation_strength_preserves_raw_outcome_mass(self):
+        distribution = _blend_outcome_distributions(
+            {
+                1: 8 / 9,
+                2: 1 / 9,
+            },
+            {
+                0: 0.2,
+                1: 0.45,
+                2: 0.3,
+                3: 0.05,
+            },
+            correlation_strength=0.0,
+        )
+
+        self.assertEqual(
+            {
+                1: 0.45,
+                2: 0.3,
             },
             distribution,
         )
