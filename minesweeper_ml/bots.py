@@ -193,6 +193,7 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
         lookahead_max_candidates: int = 4,
         lookahead_max_nodes: int = 100_000,
         lookahead_min_outcome_probability: float = 1e-6,
+        outcome_correlation_strength: float = 1.0,
         cnn_input: bool = True,
     ):
         super().__init__(width, height)
@@ -216,6 +217,10 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
             raise ValueError(
                 "lookahead_min_outcome_probability must be between zero and one."
             )
+        if not 0.0 <= outcome_correlation_strength <= 1.0:
+            raise ValueError(
+                "outcome_correlation_strength must be between zero and one."
+            )
         self.ml_model = ml_model
         self.mine_count = mine_count
         self.max_constraint_nodes = max_constraint_nodes
@@ -226,6 +231,9 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
         self.lookahead_max_nodes = lookahead_max_nodes
         self.lookahead_min_outcome_probability = (
             lookahead_min_outcome_probability
+        )
+        self.outcome_correlation_strength = (
+            outcome_correlation_strength
         )
         self.cnn_input = cnn_input
         self.last_move_strategy: str | None = None
@@ -543,6 +551,9 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
                 max_total_search_nodes=remaining_node_budget,
                 min_outcome_probability=(
                     self.lookahead_min_outcome_probability
+                ),
+                outcome_correlation_strength=(
+                    self.outcome_correlation_strength
                 ),
             )
             evaluations[move] = evaluation
