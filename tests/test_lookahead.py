@@ -1,9 +1,36 @@
 import unittest
 
-from minesweeper_ml.lookahead import evaluate_safe_click
+from minesweeper_ml.lookahead import (
+    _independent_outcome_distribution,
+    evaluate_safe_click,
+)
 
 
 class PosteriorLookaheadTest(unittest.TestCase):
+    def test_independent_outcomes_use_row_major_neighbor_order(self):
+        first = (0, 0)
+        second = (1, 0)
+        third = (2, 0)
+
+        distribution = _independent_outcome_distribution(
+            frozenset({first, second, third}),
+            {
+                first: 0.1,
+                second: 0.2,
+                third: 0.3,
+            },
+        )
+
+        self.assertEqual(
+            {
+                0: 0.504,
+                1: 0.398,
+                2: 0.092,
+                3: 0.006000000000000001,
+            },
+            distribution,
+        )
+
     def test_safe_click_scores_expected_new_deductions(self):
         candidate = (0, 0)
         neighbors = frozenset({(1, 0), (2, 0)})

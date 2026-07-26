@@ -85,11 +85,9 @@ def evaluate_safe_click(
             budget_exhausted=False,
         )
     independent_outcome_distribution = (
-        _poisson_binomial_distribution(
-            [
-                conditioned_probabilities[neighbor]
-                for neighbor in hidden_neighbors
-            ]
+        _independent_outcome_distribution(
+            hidden_neighbors,
+            conditioned_probabilities,
         )
     )
     outcome_distribution = _blend_outcome_distributions(
@@ -255,6 +253,24 @@ def _poisson_binomial_distribution(
             )
         distribution = updated
     return distribution
+
+
+def _independent_outcome_distribution(
+    hidden_neighbors: frozenset[Coordinate],
+    mine_probabilities: dict[Coordinate, float],
+) -> dict[int, float]:
+    return _poisson_binomial_distribution(
+        [
+            mine_probabilities[neighbor]
+            for neighbor in sorted(
+                hidden_neighbors,
+                key=lambda coordinate: (
+                    coordinate[1],
+                    coordinate[0],
+                ),
+            )
+        ]
+    )
 
 
 def _blend_outcome_distributions(
