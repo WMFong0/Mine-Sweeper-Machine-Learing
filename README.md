@@ -85,6 +85,17 @@ uncertain-move latency after model prediction caching. Move sources were
 131,492 deductions, 5,491 constraint-box choices, and 2,216 unconstrained-cell
 choices.
 
+The posterior-lookahead configuration was tuned separately on 500 development
+boards, selecting a `0.0025` risk margin with CNN prior strength `0.75`. On
+5,000 untouched paired boards, current constraint boxes won 4,025 games and
+lookahead won 4,087: 80.50% versus 81.74%, a 1.24 percentage-point gain.
+Lookahead won 485 boards that the baseline lost, while the baseline won 423
+that lookahead lost; the McNemar exact p-value was `0.04287`.
+
+Median uncertain-move latency was 7.68 ms and p95 was 16.18 ms on the CPU
+Colab run. There were no base solver overflows or fallback moves and one shared
+lookahead-budget exhaustion across all 5,000 games.
+
 ## Training Data
 
 Every generated and evaluated game opens `(0, 0)` first. Mine generation

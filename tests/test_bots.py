@@ -88,7 +88,8 @@ class MLMinesweeperBotTest(unittest.TestCase):
         )
 
         self.assertEqual(0.6, bot.model_weight)
-        self.assertEqual(0.01, bot.tie_margin)
+        self.assertEqual(0.75, bot.model_prior_strength)
+        self.assertEqual(0.0025, bot.tie_margin)
         self.assertEqual(4, bot.lookahead_max_candidates)
         self.assertEqual(100_000, bot.lookahead_max_nodes)
         self.assertEqual(1e-6, bot.lookahead_min_outcome_probability)
@@ -199,6 +200,7 @@ class MLMinesweeperBotTest(unittest.TestCase):
             width=10,
             height=1,
             ml_model=ScoreMapPredictionModel([[0.5] * 10]),
+            tie_margin=0.01,
         )
         visible_map = [["-"] * 10]
         probabilities = {
@@ -266,6 +268,7 @@ class MLMinesweeperBotTest(unittest.TestCase):
             width=2,
             height=1,
             ml_model=ScoreMapPredictionModel([[0.5, 0.5]]),
+            tie_margin=0.01,
         )
         visible_map = [["-", "-"]]
 
@@ -342,6 +345,7 @@ class MLMinesweeperBotTest(unittest.TestCase):
             width=4,
             height=2,
             ml_model=ScoreMapPredictionModel([[0.5] * 4, [0.5] * 4]),
+            tie_margin=0.01,
             lookahead_max_candidates=0,
         )
         visible_map = [
@@ -399,6 +403,7 @@ class MLMinesweeperBotTest(unittest.TestCase):
             width=4,
             height=2,
             ml_model=ScoreMapPredictionModel([[0.5] * 4, [0.5] * 4]),
+            tie_margin=0.01,
         )
         visible_map = [
             ["-", "-", "-", "-"],
@@ -506,6 +511,7 @@ class MLMinesweeperBotTest(unittest.TestCase):
             ScoreMapPredictionModel(scores),
             mine_count=5,
             model_prior_strength=0.75,
+            tie_margin=0.01,
             lookahead_max_candidates=0,
         )
         lookahead = MLMinesweeperBot(
@@ -514,6 +520,7 @@ class MLMinesweeperBotTest(unittest.TestCase):
             ScoreMapPredictionModel(scores),
             mine_count=5,
             model_prior_strength=0.75,
+            tie_margin=0.01,
             lookahead_max_candidates=4,
         )
 
@@ -590,7 +597,13 @@ class MLMinesweeperBotTest(unittest.TestCase):
                 [0.10, 0.10, 0.10, 0.10],
             ]
         )
-        bot = MLMinesweeperBot(width=4, height=2, ml_model=model)
+        bot = MLMinesweeperBot(
+            width=4,
+            height=2,
+            ml_model=model,
+            model_prior_strength=0.5,
+            tie_margin=0.01,
+        )
         visible_map = [
             ["-", "-", "-", "-"],
             [1, "-", "-", "-"],
