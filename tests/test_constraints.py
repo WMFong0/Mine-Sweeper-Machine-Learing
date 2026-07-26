@@ -87,6 +87,38 @@ class ConstraintBoxTest(unittest.TestCase):
         self.assertAlmostEqual(0.0, result.mine_probabilities[unconstrained])
         self.assertFalse(result.budget_exhausted)
 
+    def test_global_budget_couples_queried_and_other_unconstrained_cells(self):
+        first = (0, 0)
+        second = (1, 0)
+        queried_unconstrained = (2, 0)
+        other_unconstrained = (3, 0)
+        hidden_cells = {
+            first,
+            second,
+            queried_unconstrained,
+            other_unconstrained,
+        }
+
+        result = infer_mine_probabilities(
+            [(frozenset({first, second}), 1)],
+            hidden_cells=hidden_cells,
+            model_mine_probabilities={
+                cell: 0.5
+                for cell in hidden_cells
+            },
+            remaining_mines=2,
+            prior_strength=1.0,
+            max_search_nodes=1_000,
+            query_cells=frozenset(
+                {first, second, queried_unconstrained}
+            ),
+        )
+
+        self.assertEqual(
+            {1: 0.5, 2: 0.5},
+            result.query_mine_count_distribution,
+        )
+
     def test_total_search_budget_stops_conditional_inference(self):
         cells = {(0, 0), (1, 0), (3, 0), (4, 0)}
 

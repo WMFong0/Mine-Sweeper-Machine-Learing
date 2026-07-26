@@ -20,25 +20,6 @@ class LookaheadEvaluation:
     valid: bool
 
 
-def poisson_binomial_distribution(
-    probabilities: list[float],
-) -> dict[int, float]:
-    distribution = {0: 1.0}
-    for probability in probabilities:
-        updated: dict[int, float] = {}
-        for mine_count, weight in distribution.items():
-            updated[mine_count] = (
-                updated.get(mine_count, 0.0)
-                + weight * (1.0 - probability)
-            )
-            updated[mine_count + 1] = (
-                updated.get(mine_count + 1, 0.0)
-                + weight * probability
-            )
-        distribution = updated
-    return distribution
-
-
 def evaluate_safe_click(
     candidate: Coordinate,
     *,
@@ -72,6 +53,7 @@ def evaluate_safe_click(
         prior_strength=prior_strength,
         max_search_nodes=max_constraint_nodes,
         max_total_search_nodes=max_total_search_nodes,
+        query_cells=hidden_neighbors,
     )
     search_nodes = conditioned.search_nodes
     if (
@@ -89,12 +71,14 @@ def evaluate_safe_click(
         model_mine_probabilities,
         conditioned.mine_probabilities,
     )
-    outcome_distribution = poisson_binomial_distribution(
-        [
-            conditioned_probabilities[neighbor]
-            for neighbor in sorted(hidden_neighbors, key=_coordinate_sort_key)
-        ]
+    outcome_distribution = (
+        conditioned.query_mine_count_distribution
     )
+    if outcome_distribution is None:
+        return _invalid_evaluation(
+            search_nodes,
+            budget_exhausted=False,
+        )
     scored_cells = hidden_cells - {candidate}
     baseline_forced = _forced_cells(
         scored_cells,
@@ -249,10 +233,3 @@ def _invalid_evaluation(
         budget_exhausted=budget_exhausted,
         valid=False,
     )
-
-
-def _coordinate_sort_key(
-    coordinate: Coordinate,
-) -> tuple[int, int]:
-    x, y = coordinate
-    return y, x
