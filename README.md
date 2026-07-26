@@ -8,6 +8,7 @@ Refactored Minesweeper and ML training code split out of the original Colab expo
 - `minesweeper_ml/game.py` - board state, mines, flags, reveal logic
 - `minesweeper_ml/bots.py` - rule-based and ML bot decision logic
 - `minesweeper_ml/constraints.py` - weighted constraint boxes and global mine inference
+- `minesweeper_ml/lookahead.py` - bounded hypothetical clue scoring
 - `minesweeper_ml/data.py` - game simulation and training dataset encoding
 - `minesweeper_ml/models.py` - dense and fully convolutional Keras model builders
 - `minesweeper_ml/cli.py` - command-line modes
@@ -62,13 +63,22 @@ visible clue, and weights those layouts with clamped CNN mine probabilities.
 Box mine-count distributions are coupled to unconstrained cells through the
 known total mine count.
 
-The bot opens the cell with the lowest posterior mine probability. Risks within
-`0.01` use information gain and row-major order as tie-breakers. Enumeration is
-limited to 250,000 search nodes per box; an oversized or inconsistent box falls
-back to the previous 60% model / 40% clue scorer.
+The bot opens from a shortlist based on the lowest posterior mine probability.
+Its `0.01` risk margin shrinks as the board approaches the endgame. For up to
+four near-equal cells, bounded one-step lookahead conditions the click safe,
+scores clue-consistent outcomes by expected deductions and entropy reduction,
+then uses zero-region probability, information gain, and row-major order as
+tie-breakers.
 
-On 5,000 paired 10x10 boards with 15 mines, the previous hybrid won 3,456 games
-and the constraint-box strategy won 4,043: 69.12% versus 80.86%. The paired
+Base enumeration is limited to 250,000 search nodes per box. Lookahead shares
+a separate 100,000-node budget per move and falls back deterministically to
+information gain if a hypothesis is inconsistent, overflows, or exhausts the
+budget. An oversized or inconsistent base box still falls back to the previous
+60% model / 40% clue scorer.
+
+In the baseline 5,000-board comparison on 10x10 boards with 15 mines, the
+previous hybrid won 3,456 games and the constraint-box strategy won 4,043:
+69.12% versus 80.86%. The paired
 McNemar exact p-value was `1.64e-70`. The selected CNN prior strength was `0.5`;
 the run had zero solver overflows, zero fallback moves, and a 0.657 ms median
 uncertain-move latency after model prediction caching. Move sources were
