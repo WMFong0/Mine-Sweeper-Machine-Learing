@@ -93,6 +93,7 @@ def evaluate_bot_factory(
         "endgame_search_nodes": 0,
         "endgame_evaluated_states": 0,
         "endgame_budget_exhaustions": 0,
+        "consensus_decisions": 0,
     }
     for mine_locations in layouts:
         game = MinesweeperGame(

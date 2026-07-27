@@ -95,6 +95,12 @@ independent. When at most 256 complete legal worlds remain, bounded recursive
 endgame search selects the move with the highest probability of eventually
 finishing the whole map.
 
+Set `decision_policy="consensus"` to replace recursive endgame search with an
+equal-vote cross-check. It averages normalized candidate ranks from exact CSP
+survival, PSEQ safe-progress, expected-safe-cell and clue-entropy signals, CNN
+safety, the optional learned value head, and local information gain. Constant
+signals abstain, and incomplete PSEQ evaluations do not vote.
+
 Base enumeration is limited to 250,000 search nodes per box. Lookahead uses
 a deterministic 25,000-work-unit budget per move, or 100,000 for the automatic
 Expert profile; endgame search has its own 100,000-unit budget. Either layer
@@ -134,6 +140,11 @@ pre-profile defaults won 93 of 200 paired boards and the automatic Expert
 profile won 98: 46.5% versus 49.0%. Median uncertain-move latency increased
 from 17.9 ms to 127.2 ms. This small run selected the profile; it is not a
 substitute for the larger paired benchmark with a trained Expert checkpoint.
+
+Consensus beat PSEQ-D256 42 to 38 on its 100-board Expert development set, but
+lost the untouched 200-board comparison 65 to 66 (`p=1.0`). On 500 untouched
+10x10 boards it won 419 games versus PSEQ-D256's 426. It therefore remains an
+explicit experimental policy rather than the default.
 
 ## Training Data
 

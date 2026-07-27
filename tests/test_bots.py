@@ -96,6 +96,7 @@ class MLMinesweeperBotTest(unittest.TestCase):
         self.assertTrue(bot.exact_lookahead)
         self.assertEqual(256, bot.endgame_max_worlds)
         self.assertEqual(100_000, bot.endgame_max_nodes)
+        self.assertEqual("pseq", bot.decision_policy)
 
     def test_large_dense_board_uses_expert_pseq_defaults(self):
         bot = MLMinesweeperBot(
@@ -214,6 +215,13 @@ class MLMinesweeperBotTest(unittest.TestCase):
             MLMinesweeperBot(1, 1, model, model_weight=1.01)
         with self.assertRaises(ValueError):
             MLMinesweeperBot(1, 1, model, tie_margin=-0.01)
+        with self.assertRaises(ValueError):
+            MLMinesweeperBot(
+                1,
+                1,
+                model,
+                decision_policy="unknown",
+            )
 
     def test_rejects_invalid_constraint_parameters(self):
         model = ScoreMapPredictionModel([[0.5]])
@@ -396,6 +404,58 @@ class MLMinesweeperBotTest(unittest.TestCase):
             )
 
         self.assertEqual((0, 0), move)
+
+    def test_consensus_averages_pseq_signal_rankings(self):
+        bot = MLMinesweeperBot(
+            width=2,
+            height=1,
+            ml_model=ScoreMapPredictionModel([[0.5, 0.5]]),
+            decision_policy="consensus",
+        )
+        visible_map = [["-", "-"]]
+
+        with patch(
+            "minesweeper_ml.bots.evaluate_safe_click",
+            side_effect=[
+                _lookahead_evaluation(
+                    safe_progress_probability=0.9,
+                    expected_safe_cells=1.0,
+                    clue_entropy=0.1,
+                ),
+                _lookahead_evaluation(
+                    safe_progress_probability=0.8,
+                    expected_safe_cells=2.0,
+                    clue_entropy=0.9,
+                ),
+            ],
+        ):
+            move = bot._select_posterior_move(
+                {(0, 0): 0.1, (1, 0): 0.1},
+                visible_map=visible_map,
+                deduced_mines=set(),
+                constraints=[],
+                hidden_cells={(0, 0), (1, 0)},
+                model_mine_probabilities={(0, 0): 0.5, (1, 0): 0.5},
+                remaining_mines=None,
+            )
+
+        self.assertEqual((1, 0), move)
+        self.assertEqual(1, bot.strategy_stats["consensus_decisions"])
+
+    def test_consensus_policy_replaces_endgame_tree(self):
+        bot = MLMinesweeperBot(
+            width=3,
+            height=1,
+            ml_model=ScoreMapPredictionModel([[0.9, 0.5, 0.1]]),
+            mine_count=1,
+            decision_policy="consensus",
+        )
+
+        with patch("minesweeper_ml.bots.solve_endgame") as endgame:
+            bot.get_next_move([["-", "-", "-"]])
+
+        endgame.assert_not_called()
+        self.assertEqual(0, bot.strategy_stats["endgame_decisions"])
 
     def test_pseq_precedes_the_learned_candidate_value_tie_break(self):
         bot = MLMinesweeperBot(

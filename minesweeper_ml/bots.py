@@ -4,6 +4,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Protocol
 
+from minesweeper_ml.consensus import average_algorithm_ranks
 from minesweeper_ml.constraints import (
     Constraint,
     build_constraint_context,
@@ -216,6 +217,7 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
         use_candidate_value: bool = True,
         value_tie_margin: float = 0.01,
         cnn_input: bool = True,
+        decision_policy: str = "pseq",
     ):
         super().__init__(width, height)
         large_dense_board = (
@@ -255,6 +257,10 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
             raise ValueError("endgame_max_nodes must be greater than zero.")
         if value_tie_margin < 0.0:
             raise ValueError("value_tie_margin must be non-negative.")
+        if decision_policy not in {"pseq", "consensus"}:
+            raise ValueError(
+                "decision_policy must be either 'pseq' or 'consensus'."
+            )
         self.ml_model = ml_model
         self.mine_count = mine_count
         self.max_constraint_nodes = max_constraint_nodes
@@ -274,6 +280,7 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
         self.use_candidate_value = use_candidate_value
         self.value_tie_margin = value_tie_margin
         self.cnn_input = cnn_input
+        self.decision_policy = decision_policy
         self.last_move_strategy: str | None = None
         self.last_decision: BotDecision | None = None
         self._decision_probabilities: dict[Coordinate, float] = {}
@@ -293,6 +300,7 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
             "endgame_search_nodes": 0,
             "endgame_evaluated_states": 0,
             "endgame_budget_exhaustions": 0,
+            "consensus_decisions": 0,
         }
 
     def get_next_move(self, visible_map: list[list[Cell]]) -> Coordinate | None:
@@ -394,6 +402,7 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
                 )
                 if (
                     self.endgame_max_worlds
+                    and self.decision_policy != "consensus"
                     and remaining_mines is not None
                     and inference.complete
                 ):
@@ -730,6 +739,67 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
             self.strategy_stats["lookahead_budget_exhaustions"] += 1
         if has_valid_evaluation:
             self.strategy_stats["lookahead_decisions"] += 1
+
+        if self.decision_policy == "consensus":
+            signals = [
+                {
+                    move: 1.0 - mine_probabilities[move]
+                    for move in shortlisted_moves
+                },
+                {
+                    move: 1.0 - model_mine_probabilities.get(move, 1.0)
+                    for move in shortlisted_moves
+                },
+                {
+                    move: float(
+                        self._information_gain(
+                            move,
+                            visible_map,
+                            deduced_mines,
+                        )
+                    )
+                    for move in shortlisted_moves
+                },
+            ]
+            if all(
+                (evaluation := evaluations.get(move)) is not None
+                and evaluation.valid
+                for move in shortlisted_moves
+            ):
+                signals.extend(
+                    {
+                        move: float(metric(evaluations[move]))
+                        for move in shortlisted_moves
+                    }
+                    for metric in (
+                        lambda evaluation: (
+                            evaluation.safe_progress_probability
+                        ),
+                        lambda evaluation: evaluation.expected_safe_cells,
+                        lambda evaluation: evaluation.clue_entropy,
+                    )
+                )
+            if candidate_values:
+                signals.append(
+                    {
+                        move: candidate_values.get(move, 0.0)
+                        for move in shortlisted_moves
+                    }
+                )
+            consensus_scores = average_algorithm_ranks(
+                shortlisted_moves,
+                signals,
+            )
+            self.strategy_stats["consensus_decisions"] += 1
+            return min(
+                shortlisted_moves,
+                key=lambda move: (
+                    -consensus_scores[move],
+                    mine_probabilities[move],
+                    move[1],
+                    move[0],
+                ),
+            )
 
         def selection_key(move: Coordinate):
             evaluation = evaluations.get(move)
