@@ -74,30 +74,30 @@ The rule-based bot now applies basic Minesweeper deductions before using a risk 
 
 The ML bot uses deterministic safe moves first. It then groups hidden frontier
 cells into connected constraint boxes, enumerates layouts that satisfy every
-visible clue, and weights those layouts with clamped CNN mine probabilities.
+visible clue, and gives every complete legal fixed-mine layout equal weight.
 Box mine-count distributions are coupled to unconstrained cells through the
-known total mine count.
+known total mine count. CNN probabilities remain available for incomplete
+searches and final ties, but do not override an exact CSP posterior.
 
 The bot opens from a shortlist based on the lowest posterior mine probability.
-Its `0.01` risk margin shrinks as the board approaches the endgame. For up to
-four near-equal cells, bounded one-step lookahead conditions the click safe,
-scores clue-consistent outcomes by expected deductions and entropy reduction,
-then uses zero-region probability, information gain, and row-major order as
-tie-breakers.
+Its risk margin shrinks as the board approaches the endgame. For up to four
+near-equal cells, exact PSEQ lookahead ranks candidates by probability of
+producing a guaranteed-safe move, expected guaranteed-safe cells, and clue
+entropy. Learned candidate value and CNN safety resolve remaining ties.
 
-The upgrade strategy caches every legal weighted box assignment. Candidate-safe
-clue distributions and clue-conditioned cell marginals are derived from that
-joint distribution, so mutually exclusive cells are never treated as
-independent and lookahead does not repeat constraint searches. The accepted
-Poisson-binomial lookahead remains the default until the upgrade passes the
-paired final gate; set `exact_lookahead=True` on `MLMinesweeperBot` to enable
-the new inference.
+Candidate-safe clue distributions and clue-conditioned marginals come from the
+joint legal assignments, so mutually exclusive cells are never treated as
+independent. When at most 256 complete legal worlds remain, bounded recursive
+endgame search selects the move with the highest probability of eventually
+finishing the whole map.
 
 Base enumeration is limited to 250,000 search nodes per box. Lookahead shares
-a separate 100,000-node budget per move and falls back deterministically to
-information gain if a hypothesis is inconsistent, overflows, or exhausts the
-budget. An oversized or inconsistent base box still falls back to the previous
-60% model / 40% clue scorer.
+a separate deterministic 25,000-work-unit budget per move; endgame search has
+its own 100,000-unit budget. Either layer falls back deterministically if a
+hypothesis is inconsistent, overflows, or exhausts its budget. An oversized or
+inconsistent base box still falls back to the previous 60% model / 40% clue
+scorer. Set `uniform_constraint_posterior=False`, `exact_lookahead=False`, and
+`endgame_max_worlds=0` to reproduce the legacy strategy.
 
 In the baseline 5,000-board comparison on 10x10 boards with 15 mines, the
 previous hybrid won 3,456 games and the constraint-box strategy won 4,043:
@@ -108,7 +108,7 @@ uncertain-move latency after model prediction caching. Move sources were
 131,492 deductions, 5,491 constraint-box choices, and 2,216 unconstrained-cell
 choices.
 
-The posterior-lookahead configuration was tuned separately on 500 development
+The previous posterior-lookahead configuration was tuned separately on 500 development
 boards, selecting a `0.0025` risk margin with CNN prior strength `0.75`. On
 5,000 untouched paired boards, current constraint boxes won 4,025 games and
 lookahead won 4,087: 80.50% versus 81.74%, a 1.24 percentage-point gain.
@@ -118,6 +118,11 @@ that lookahead lost; the McNemar exact p-value was `0.04287`.
 Median uncertain-move latency was 7.68 ms and p95 was 16.18 ms on the CPU
 Colab run. There were no base solver overflows or fallback moves and one shared
 lookahead-budget exhaustion across all 5,000 games.
+
+The uniform-CSP, exact-PSEQ, and recursive-endgame combination is implemented
+but has not yet passed the 500-development / 5,000-paired acceptance gate with
+the trained checkpoint. Evaluation summaries report lookahead and endgame
+decisions, work, states, and budget exhaustions for that comparison.
 
 ## Training Data
 

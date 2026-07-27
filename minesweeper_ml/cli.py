@@ -18,6 +18,13 @@ from minesweeper_ml.game import GameState, MinesweeperGame
 from minesweeper_ml.models import build_cnn_model
 
 
+LEGACY_STRATEGY_OPTIONS = {
+    "uniform_constraint_posterior": False,
+    "exact_lookahead": False,
+    "endgame_max_worlds": 0,
+}
+
+
 DEFAULTS = {
     "width": 10,
     "height": 10,
@@ -201,6 +208,10 @@ def evaluate_ml_bot_games(
         "lookahead_decisions": 0,
         "lookahead_search_nodes": 0,
         "lookahead_budget_exhaustions": 0,
+        "endgame_decisions": 0,
+        "endgame_search_nodes": 0,
+        "endgame_evaluated_states": 0,
+        "endgame_budget_exhaustions": 0,
         "median_uncertain_move_ms": 0.0,
         "fallback_move_rate": 0.0,
     }
@@ -252,6 +263,13 @@ def evaluate_ml_bot_games(
         summary["lookahead_budget_exhaustions"] += bot.strategy_stats[
             "lookahead_budget_exhaustions"
         ]
+        for metric in (
+            "endgame_decisions",
+            "endgame_search_nodes",
+            "endgame_evaluated_states",
+            "endgame_budget_exhaustions",
+        ):
+            summary[metric] += bot.strategy_stats.get(metric, 0)
         total_safe_moves += safe_moves
         if game.state == GameState.WON:
             summary["won"] += 1
@@ -308,6 +326,18 @@ def print_evaluation_summary(summary) -> None:
         f"{summary['lookahead_decisions']} lookahead decisions, "
         f"{summary['lookahead_search_nodes']} lookahead search nodes, "
         f"{summary['lookahead_budget_exhaustions']} {exhaustion_label}"
+    )
+    endgame_exhaustion_label = (
+        "budget exhaustion"
+        if summary["endgame_budget_exhaustions"] == 1
+        else "budget exhaustions"
+    )
+    print(
+        f"{summary['endgame_decisions']} endgame decisions, "
+        f"{summary['endgame_search_nodes']} endgame search nodes, "
+        f"{summary['endgame_evaluated_states']} states, "
+        f"{summary['endgame_budget_exhaustions']} "
+        f"{endgame_exhaustion_label}"
     )
 
 
@@ -370,9 +400,9 @@ def main() -> None:
                 height,
                 teacher_model,
                 mine_count=mine_count,
-                exact_lookahead=False,
                 symmetry_ensemble=False,
                 use_candidate_value=False,
+                **LEGACY_STRATEGY_OPTIONS,
             )
 
         def candidate_factory(width, height, mine_count):

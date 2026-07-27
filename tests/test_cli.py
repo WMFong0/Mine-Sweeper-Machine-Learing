@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from minesweeper_ml.cli import (
+    LEGACY_STRATEGY_OPTIONS,
     build_parser,
     evaluate_ml_bot_games,
     move_delay_for_mode,
@@ -43,6 +44,10 @@ class MineCountRequiringBot:
             "lookahead_decisions": 4,
             "lookahead_search_nodes": 123,
             "lookahead_budget_exhaustions": 1,
+            "endgame_decisions": 2,
+            "endgame_search_nodes": 456,
+            "endgame_evaluated_states": 78,
+            "endgame_budget_exhaustions": 1,
         }
         self.last_move_strategy = None
 
@@ -51,6 +56,16 @@ class MineCountRequiringBot:
 
 
 class CliTest(unittest.TestCase):
+    def test_legacy_benchmark_strategy_disables_new_solver_layers(self):
+        self.assertEqual(
+            {
+                "uniform_constraint_posterior": False,
+                "exact_lookahead": False,
+                "endgame_max_worlds": 0,
+            },
+            LEGACY_STRATEGY_OPTIONS,
+        )
+
     def test_smoke_mode_uses_fast_training_defaults(self):
         args = build_parser().parse_args(["--mode", "smoke"])
 
@@ -159,6 +174,10 @@ class CliTest(unittest.TestCase):
         self.assertEqual(4, summary["lookahead_decisions"])
         self.assertEqual(123, summary["lookahead_search_nodes"])
         self.assertEqual(1, summary["lookahead_budget_exhaustions"])
+        self.assertEqual(2, summary["endgame_decisions"])
+        self.assertEqual(456, summary["endgame_search_nodes"])
+        self.assertEqual(78, summary["endgame_evaluated_states"])
+        self.assertEqual(1, summary["endgame_budget_exhaustions"])
 
     def test_bot_game_passes_mine_count_to_the_ml_bot(self):
         with (
@@ -190,6 +209,10 @@ class CliTest(unittest.TestCase):
             "lookahead_decisions": 4,
             "lookahead_search_nodes": 123,
             "lookahead_budget_exhaustions": 1,
+            "endgame_decisions": 2,
+            "endgame_search_nodes": 456,
+            "endgame_evaluated_states": 78,
+            "endgame_budget_exhaustions": 1,
             "median_uncertain_move_ms": 1.25,
             "fallback_move_rate": 1 / 6,
         }
@@ -208,5 +231,10 @@ class CliTest(unittest.TestCase):
         self.assertIn(
             "4 lookahead decisions, 123 lookahead search nodes, "
             "1 budget exhaustion",
+            output.getvalue(),
+        )
+        self.assertIn(
+            "2 endgame decisions, 456 endgame search nodes, "
+            "78 states, 1 budget exhaustion",
             output.getvalue(),
         )

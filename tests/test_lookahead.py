@@ -1,3 +1,4 @@
+import math
 import unittest
 
 from minesweeper_ml.constraints import build_constraint_context
@@ -39,6 +40,16 @@ class PosteriorLookaheadTest(unittest.TestCase):
         self.assertAlmostEqual(1.0, result.expected_forced_cells)
         self.assertGreater(result.expected_entropy_reduction, 0.0)
         self.assertAlmostEqual(0.25, result.zero_region_probability)
+        self.assertAlmostEqual(0.25, result.safe_progress_probability)
+        self.assertAlmostEqual(0.5, result.expected_safe_cells)
+        self.assertAlmostEqual(
+            -(
+                0.25 * math.log(0.25)
+                + 0.5 * math.log(0.5)
+                + 0.25 * math.log(0.25)
+            ),
+            result.clue_entropy,
+        )
 
     def test_impossible_clue_outcomes_are_ignored(self):
         candidate = (0, 0)
@@ -89,13 +100,13 @@ class PosteriorLookaheadTest(unittest.TestCase):
             remaining_mines=None,
             prior_strength=1.0,
             max_constraint_nodes=1_000,
-            max_total_search_nodes=1,
+            max_total_search_nodes=1_000,
             min_outcome_probability=1e-6,
             inference_context=context,
         )
 
         self.assertTrue(result.valid)
-        self.assertEqual(0, result.search_nodes)
+        self.assertGreater(result.search_nodes, 0)
         self.assertAlmostEqual(0.0, result.expected_forced_cells)
         self.assertAlmostEqual(0.0, result.zero_region_probability)
 
@@ -123,6 +134,41 @@ class PosteriorLookaheadTest(unittest.TestCase):
         self.assertFalse(result.valid)
         self.assertTrue(result.budget_exhausted)
         self.assertLessEqual(result.search_nodes, 1)
+
+    def test_reused_exact_context_charges_conditioning_work_to_budget(self):
+        candidate = (0, 0)
+        hidden_cells = {(index, 0) for index in range(20)}
+        context = build_constraint_context(
+            [],
+            hidden_cells=hidden_cells,
+            model_mine_probabilities={
+                cell: 0.5 for cell in hidden_cells
+            },
+            remaining_mines=5,
+            prior_strength=0.0,
+            max_search_nodes=1_000,
+        )
+
+        result = evaluate_safe_click(
+            candidate,
+            hidden_neighbors=frozenset({(1, 0)}),
+            has_known_mine_neighbor=False,
+            constraints=[],
+            hidden_cells=hidden_cells,
+            model_mine_probabilities={
+                cell: 0.5 for cell in hidden_cells
+            },
+            remaining_mines=5,
+            prior_strength=0.0,
+            max_constraint_nodes=1_000,
+            max_total_search_nodes=10,
+            min_outcome_probability=1e-6,
+            inference_context=context,
+        )
+
+        self.assertFalse(result.valid)
+        self.assertTrue(result.budget_exhausted)
+        self.assertEqual(10, result.search_nodes)
 
     def test_per_box_overflow_is_not_reported_as_budget_exhaustion(self):
         candidate = (0, 0)

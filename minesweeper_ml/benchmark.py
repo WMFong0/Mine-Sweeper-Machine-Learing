@@ -85,6 +85,15 @@ def evaluate_bot_factory(
     safe_moves = []
     uncertain_latencies = []
     constraint_overflows = 0
+    solver_metrics = {
+        "lookahead_decisions": 0,
+        "lookahead_search_nodes": 0,
+        "lookahead_budget_exhaustions": 0,
+        "endgame_decisions": 0,
+        "endgame_search_nodes": 0,
+        "endgame_evaluated_states": 0,
+        "endgame_budget_exhaustions": 0,
+    }
     for mine_locations in layouts:
         game = MinesweeperGame(
             width,
@@ -115,6 +124,8 @@ def evaluate_bot_factory(
         constraint_overflows += int(
             stats.get("constraint_overflows", 0)
         )
+        for metric in solver_metrics:
+            solver_metrics[metric] += int(stats.get(metric, 0))
         wins.append(game.state == GameState.WON)
         safe_moves.append(opened_safe_moves)
     uncertain_moves = sum(
@@ -143,6 +154,7 @@ def evaluate_bot_factory(
                 uncertain_latencies,
                 0.95,
             ),
+            **solver_metrics,
         },
         wins,
     )

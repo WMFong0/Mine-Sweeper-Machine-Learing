@@ -2,6 +2,7 @@ from collections import Counter
 import unittest
 
 from minesweeper_ml.data import (
+    _default_bot_factory,
     build_sample_weights,
     calculate_class_weights,
     encode_board_state,
@@ -18,6 +19,11 @@ from minesweeper_ml.game import GameState
 
 
 class TrainingDataTest(unittest.TestCase):
+    def test_default_generation_bot_skips_recursive_endgame_search(self):
+        bot = _default_bot_factory(3, 2, 1)
+
+        self.assertEqual(0, bot.endgame_max_worlds)
+
     def test_encode_board_state_uses_notebook_numeric_mapping(self):
         board_state = [
             ["-", 0, 2],

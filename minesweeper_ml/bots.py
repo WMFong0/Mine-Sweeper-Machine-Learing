@@ -9,6 +9,7 @@ from minesweeper_ml.constraints import (
     build_constraint_context,
 )
 from minesweeper_ml.data import encode_board_features, encode_board_state
+from minesweeper_ml.endgame import solve_endgame
 from minesweeper_ml.game import Cell, Coordinate
 from minesweeper_ml.lookahead import evaluate_safe_click
 from minesweeper_ml.symmetry import predict_spatial_maps
@@ -202,12 +203,15 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
         mine_count: int | None = None,
         max_constraint_nodes: int = 250_000,
         model_prior_strength: float = 0.75,
+        uniform_constraint_posterior: bool = True,
         model_weight: float = 0.6,
         tie_margin: float = 0.0025,
         lookahead_max_candidates: int = 4,
-        lookahead_max_nodes: int = 100_000,
+        lookahead_max_nodes: int = 25_000,
         lookahead_min_outcome_probability: float = 1e-6,
-        exact_lookahead: bool = False,
+        exact_lookahead: bool = True,
+        endgame_max_worlds: int = 256,
+        endgame_max_nodes: int = 100_000,
         symmetry_ensemble: bool = False,
         use_candidate_value: bool = True,
         value_tie_margin: float = 0.01,
@@ -234,12 +238,17 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
             raise ValueError(
                 "lookahead_min_outcome_probability must be between zero and one."
             )
+        if endgame_max_worlds < 0:
+            raise ValueError("endgame_max_worlds must be non-negative.")
+        if endgame_max_nodes <= 0:
+            raise ValueError("endgame_max_nodes must be greater than zero.")
         if value_tie_margin < 0.0:
             raise ValueError("value_tie_margin must be non-negative.")
         self.ml_model = ml_model
         self.mine_count = mine_count
         self.max_constraint_nodes = max_constraint_nodes
         self.model_prior_strength = model_prior_strength
+        self.uniform_constraint_posterior = uniform_constraint_posterior
         self.model_weight = model_weight
         self.tie_margin = tie_margin
         self.lookahead_max_candidates = lookahead_max_candidates
@@ -248,6 +257,8 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
             lookahead_min_outcome_probability
         )
         self.exact_lookahead = exact_lookahead
+        self.endgame_max_worlds = endgame_max_worlds
+        self.endgame_max_nodes = endgame_max_nodes
         self.symmetry_ensemble = symmetry_ensemble
         self.use_candidate_value = use_candidate_value
         self.value_tie_margin = value_tie_margin
@@ -267,6 +278,10 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
             "lookahead_decisions": 0,
             "lookahead_search_nodes": 0,
             "lookahead_budget_exhaustions": 0,
+            "endgame_decisions": 0,
+            "endgame_search_nodes": 0,
+            "endgame_evaluated_states": 0,
+            "endgame_budget_exhaustions": 0,
         }
 
     def get_next_move(self, visible_map: list[list[Cell]]) -> Coordinate | None:
@@ -316,12 +331,17 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
             if self.mine_count is None
             else self.mine_count - len(deduced_mines)
         )
+        constraint_prior_strength = (
+            0.0
+            if self.uniform_constraint_posterior
+            else self.model_prior_strength
+        )
         inference = build_constraint_context(
             constraints,
             hidden_cells=hidden_cells,
             model_mine_probabilities=model_mine_probabilities,
             remaining_mines=remaining_mines,
-            prior_strength=self.model_prior_strength,
+            prior_strength=constraint_prior_strength,
             max_search_nodes=self.max_constraint_nodes,
         )
         self.strategy_stats["constraint_search_nodes"] += inference.search_nodes
@@ -361,6 +381,39 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
                     posterior_candidates,
                     len(hidden_cells),
                 )
+                if (
+                    self.endgame_max_worlds
+                    and remaining_mines is not None
+                    and inference.complete
+                ):
+                    endgame = solve_endgame(
+                        constraints,
+                        hidden_cells=hidden_cells,
+                        remaining_mines=remaining_mines,
+                        width=self.width,
+                        height=self.height,
+                        max_worlds=self.endgame_max_worlds,
+                        max_search_nodes=self.endgame_max_nodes,
+                        max_constraint_nodes=self.max_constraint_nodes,
+                        inference_context=inference,
+                    )
+                    self.strategy_stats["endgame_search_nodes"] += (
+                        endgame.search_nodes
+                    )
+                    self.strategy_stats["endgame_evaluated_states"] += (
+                        endgame.evaluated_states
+                    )
+                    self.strategy_stats[
+                        "endgame_budget_exhaustions"
+                    ] += int(endgame.budget_exhausted)
+                    if endgame.valid and endgame.move is not None:
+                        self.strategy_stats["endgame_decisions"] += 1
+                        strategy = (
+                            "box"
+                            if endgame.move in constrained_cells
+                            else "unconstrained"
+                        )
+                        return self._record_move(endgame.move, strategy)
                 move = self._select_posterior_move(
                     posterior_candidates,
                     visible_map=visible_map,
@@ -369,6 +422,7 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
                     hidden_cells=hidden_cells,
                     model_mine_probabilities=model_mine_probabilities,
                     remaining_mines=remaining_mines,
+                    constraint_prior_strength=constraint_prior_strength,
                     inference_context=inference,
                     candidate_values=(
                         {
@@ -546,6 +600,7 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
         hidden_cells: set[Coordinate],
         model_mine_probabilities: dict[Coordinate, float],
         remaining_mines: int | None,
+        constraint_prior_strength: float | None = None,
         inference_context=None,
         candidate_values: dict[Coordinate, float] | None = None,
     ) -> Coordinate:
@@ -566,22 +621,22 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
                 item[1][0],
             ),
         )
-        if candidate_values:
-            highest_value = max(
-                candidate_values.get(move, 0.0)
-                for _, move in eligible_candidates
-            )
-            eligible_candidates = [
-                item
-                for item in eligible_candidates
-                if highest_value
-                - candidate_values.get(item[1], 0.0)
-                <= self.value_tie_margin
-            ]
         if (
             self.lookahead_max_candidates == 0
             or len(eligible_candidates) <= 1
         ):
+            if candidate_values:
+                highest_value = max(
+                    candidate_values.get(move, 0.0)
+                    for _, move in eligible_candidates
+                )
+                eligible_candidates = [
+                    item
+                    for item in eligible_candidates
+                    if highest_value
+                    - candidate_values.get(item[1], 0.0)
+                    <= self.value_tie_margin
+                ]
             return self._lowest_probability_move(
                 {
                     move: mine_probability
@@ -627,7 +682,11 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
                 "hidden_cells": hidden_cells,
                 "model_mine_probabilities": model_mine_probabilities,
                 "remaining_mines": remaining_mines,
-                "prior_strength": self.model_prior_strength,
+                "prior_strength": (
+                    self.model_prior_strength
+                    if constraint_prior_strength is None
+                    else constraint_prior_strength
+                ),
                 "max_constraint_nodes": self.max_constraint_nodes,
                 "max_total_search_nodes": remaining_node_budget,
                 "min_outcome_probability": (
@@ -663,6 +722,21 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
 
         def selection_key(move: Coordinate):
             evaluation = evaluations.get(move)
+            safe_progress_probability = (
+                evaluation.safe_progress_probability
+                if evaluation is not None and evaluation.valid
+                else 0.0
+            )
+            expected_safe_cells = (
+                evaluation.expected_safe_cells
+                if evaluation is not None and evaluation.valid
+                else 0.0
+            )
+            clue_entropy = (
+                evaluation.clue_entropy
+                if evaluation is not None and evaluation.valid
+                else 0.0
+            )
             expected_forced_cells = (
                 evaluation.expected_forced_cells
                 if evaluation is not None and evaluation.valid
@@ -679,6 +753,15 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
                 else 0.0
             )
             return (
+                -safe_progress_probability,
+                -expected_safe_cells,
+                -clue_entropy,
+                -(
+                    candidate_values.get(move, 0.0)
+                    if candidate_values
+                    else 0.0
+                ),
+                model_mine_probabilities.get(move, 1.0),
                 -expected_forced_cells,
                 -expected_entropy_reduction,
                 -zero_region_probability,
