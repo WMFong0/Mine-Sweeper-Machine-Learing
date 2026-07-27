@@ -7,10 +7,14 @@ from minesweeper_ml.data import (
     encode_board_state,
     encode_board_features,
     encode_ground_truth_map,
+    evaluate_candidate_values,
     frontier_mask,
     generate_training_data,
+    multitask_dataset_to_arrays,
+    run_single_bot_game_and_collect_data,
     split_dataset_by_game,
 )
+from minesweeper_ml.game import GameState
 
 
 class TrainingDataTest(unittest.TestCase):
@@ -58,9 +62,11 @@ class TrainingDataTest(unittest.TestCase):
         self.assertTrue(first)
 
         phase_counts = Counter((sample["game_id"], sample["phase"]) for sample in first)
-        self.assertTrue(all(count == 1 for count in phase_counts.values()))
+        self.assertTrue(all(count <= 4 for count in phase_counts.values()))
         self.assertGreater(len({sample["phase"] for sample in first}), 1)
-        self.assertGreater(len({sample["policy"] for sample in first}), 1)
+        self.assertTrue(
+            all(sample["policy"] != "oracle-safe" for sample in first)
+        )
 
     def test_generated_games_open_a_safe_zero_zero_first(self):
         samples = generate_training_data(8, 5, 5, 5, seed=321)
@@ -68,6 +74,99 @@ class TrainingDataTest(unittest.TestCase):
         self.assertTrue(samples)
         self.assertTrue(all(sample["ground_truth_map"][0][0] != "M" for sample in samples))
         self.assertTrue(all(sample["board_state"][0][0] != "-" for sample in samples))
+
+    def test_on_policy_generation_does_not_replace_a_mined_move(self):
+        class MinedMoveBot:
+            last_move_strategy = "box"
+            last_decision = None
+
+            def get_next_move(self, visible_map):
+                return (1, 0)
+
+        samples, result = run_single_bot_game_and_collect_data(
+            width=3,
+            height=1,
+            mine_count=1,
+            mine_locations=[(1, 0)],
+            bot_factory=lambda *_: MinedMoveBot(),
+        )
+
+        self.assertEqual(GameState.LOST, result)
+        self.assertEqual((1, 0), samples[0]["chosen_move"])
+        self.assertFalse(samples[0]["is_safe"])
+        self.assertEqual(2.0, samples[0]["trajectory_weight"])
+
+    def test_close_probability_losses_receive_both_weights(self):
+        class Decision:
+            probability_gap = 0.002
+
+        class CloseLossBot:
+            last_move_strategy = "box"
+            last_decision = Decision()
+
+            def get_next_move(self, visible_map):
+                return (1, 0)
+
+        samples, _ = run_single_bot_game_and_collect_data(
+            width=3,
+            height=1,
+            mine_count=1,
+            mine_locations=[(1, 0)],
+            bot_factory=lambda *_: CloseLossBot(),
+            loss_weight=3.0,
+            close_probability_weight=4.0,
+            close_probability_threshold=0.01,
+        )
+
+        self.assertEqual(12.0, samples[0]["trajectory_weight"])
+
+    def test_candidate_value_labels_mask_mines_and_score_full_wins(self):
+        class FinishBot:
+            def get_next_move(self, visible_map):
+                return (1, 0)
+
+        from minesweeper_ml.game import MinesweeperGame
+
+        game = MinesweeperGame(
+            width=2,
+            height=2,
+            mine_count=1,
+            mine_locations=[(1, 1)],
+        )
+        game.open_cell(0, 0)
+
+        targets, mask = evaluate_candidate_values(
+            game,
+            [(0, 1), (1, 1)],
+            bot_factory=lambda *_: FinishBot(),
+            max_candidates=2,
+            max_moves=10,
+        )
+
+        self.assertEqual(1, targets[1][0])
+        self.assertEqual(1, mask[1][0])
+        self.assertEqual(0, targets[1][1])
+        self.assertEqual(0, mask[1][1])
+
+    def test_multitask_arrays_include_value_targets_and_trajectory_weights(self):
+        sample = {
+            "board_state": [[1, "-"], ["-", "-"]],
+            "ground_truth_map": [[1, "M"], [0, 1]],
+            "training_mask": [[0, 1], [1, 1]],
+            "value_targets": [[0, 0], [1, 0]],
+            "value_mask": [[0, 0], [1, 0]],
+            "trajectory_weight": 3.0,
+        }
+
+        features, targets, masks, trajectory_weights = (
+            multitask_dataset_to_arrays([sample])
+        )
+
+        self.assertEqual((1, 2, 2, 10), features.shape)
+        self.assertEqual({"safety", "value"}, set(targets))
+        self.assertEqual(1, targets["value"][0, 1, 0, 0])
+        self.assertEqual(1, masks["value"][0, 1, 0, 0])
+        self.assertEqual([3.0], trajectory_weights.tolist())
 
     def test_board_features_are_one_hot_spatial_channels(self):
         features = encode_board_features([["-", 0, 2]])

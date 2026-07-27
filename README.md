@@ -8,9 +8,12 @@ Refactored Minesweeper and ML training code split out of the original Colab expo
 - `minesweeper_ml/game.py` - board state, mines, flags, reveal logic
 - `minesweeper_ml/bots.py` - rule-based and ML bot decision logic
 - `minesweeper_ml/constraints.py` - weighted constraint boxes and global mine inference
-- `minesweeper_ml/lookahead.py` - bounded hypothetical clue scoring
-- `minesweeper_ml/data.py` - game simulation and training dataset encoding
-- `minesweeper_ml/models.py` - dense and fully convolutional Keras model builders
+- `minesweeper_ml/lookahead.py` - exact and control hypothetical clue scoring
+- `minesweeper_ml/data.py` - on-policy trajectories and rollout labels
+- `minesweeper_ml/models.py` - single- and dual-head convolutional models
+- `minesweeper_ml/symmetry.py` - D4 augmentation and test-time ensembling
+- `minesweeper_ml/training.py` - warm-start multitask training tournament
+- `minesweeper_ml/benchmark.py` - paired completed-map evaluation
 - `minesweeper_ml/cli.py` - command-line modes
 - `tests/` - smoke tests for game, data, CLI, and bot rules
 
@@ -42,6 +45,18 @@ Run the full CNN path:
 python .\mine_sweeper_machine_learning.py --mode train-cnn --games 50000 --epochs 50 --seed 42 --eval-games 100
 ```
 
+Run the complete win-rate experiment:
+
+```powershell
+python .\mine_sweeper_machine_learning.py --mode train-upgrade --games 50000 --epochs 50 --dev-games 500 --eval-games 5000 --model-out minesweeper_upgraded.keras
+```
+
+`train-upgrade` first creates or loads a safety teacher, generates on-policy
+uncertain states, trains both CNN architectures with D4 augmentation, tunes
+value tie-breaking on the development boards, and performs one paired final
+comparison. Pass `--teacher-model existing.keras` to start from an existing
+checkpoint.
+
 ## Tests
 
 ```powershell
@@ -69,6 +84,14 @@ four near-equal cells, bounded one-step lookahead conditions the click safe,
 scores clue-consistent outcomes by expected deductions and entropy reduction,
 then uses zero-region probability, information gain, and row-major order as
 tie-breakers.
+
+The upgrade strategy caches every legal weighted box assignment. Candidate-safe
+clue distributions and clue-conditioned cell marginals are derived from that
+joint distribution, so mutually exclusive cells are never treated as
+independent and lookahead does not repeat constraint searches. The accepted
+Poisson-binomial lookahead remains the default until the upgrade passes the
+paired final gate; set `exact_lookahead=True` on `MLMinesweeperBot` to enable
+the new inference.
 
 Base enumeration is limited to 250,000 search nodes per box. Lookahead shares
 a separate 100,000-node budget per move and falls back deterministically to
@@ -102,19 +125,45 @@ Every generated and evaluated game opens `(0, 0)` first. Mine generation
 protects only that cell; every other cell, including its neighbors, remains
 eligible for a mine.
 
-After the first click, the offline generator mixes three exploration policies:
+After the first click, every trajectory move comes from an
+`MLMinesweeperBot`. The generator never filters candidates with `mine_map`, so
+the policy can lose exactly as it can in deployment. States are captured
+immediately before uncertain decisions, with up to four samples per game phase.
+Lost games and posterior gaps at or below `0.01` receive configurable training
+weight multipliers.
 
-- 50% rule/risk bot moves for realistic trajectories
-- 30% safe frontier exploration for varied local clue states
-- 20% safe global exploration to break a single corner-expansion pattern
+The mine map is consulted only after candidate selection to create safety
+labels and bounded counterfactual value labels. A value label is active only
+for a candidate known retrospectively to be safe, and equals one only when
+opening that candidate and continuing with the constraint policy completes the
+whole board. Training and test data remain split by whole mine layout.
 
-Ground truth is used only to choose safe exploration moves during offline data
-generation. It is never included in model inputs.
+The multitask model receives a ten-channel spatial board and predicts both cell
+safety and `P(whole-board win | safe click)`. Safety loss is restricted to the
+hidden frontier and class-balanced; value loss is restricted to evaluated safe
+candidates. Square boards train on all eight rotations/reflections and inference
+can average those eight aligned predictions in one batch.
 
-Each game contributes at most one randomly selected state from each early,
-middle, and late phase. Training and test data are split by whole game, so
-states from one mine layout cannot leak across the split.
+Two trunks are trained under identical data and seeds:
 
-The model receives a ten-channel spatial board and predicts a safety map with a
-fully convolutional network. Loss and accuracy are calculated only for hidden
-frontier cells, with mine and safe labels class-balanced through sample weights.
+- `local_3x3`: the existing 32/64/32 spatial stack
+- `paper_5x5`: a wider 64/128/64 stack with 5x5 kernels
+
+Development selection uses completed-map wins, then average safe moves, then
+latency. The final strategy is accepted only for at least a one-percentage-point
+paired gain, exact McNemar `p < 0.05`, and median uncertain-move latency below
+100 ms.
+
+## Google Colab
+
+The Colab workflow needs two code cells and no embedded `BUNDLE_B64`.
+
+```python
+!git clone --branch codex/posterior-lookahead https://github.com/WMFong0/Mine-Sweeper-Machine-Learing.git
+%cd Mine-Sweeper-Machine-Learing
+!pip install -r requirements.txt
+```
+
+```python
+!python mine_sweeper_machine_learning.py --mode train-upgrade --games 50000 --epochs 50 --dev-games 500 --eval-games 5000 --seed 42 --model-out /content/minesweeper_upgraded.keras
+```

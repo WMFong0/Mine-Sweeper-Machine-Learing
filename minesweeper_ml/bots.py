@@ -1,17 +1,31 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
 from typing import Protocol
 
-from minesweeper_ml.constraints import Constraint, infer_mine_probabilities
+from minesweeper_ml.constraints import (
+    Constraint,
+    build_constraint_context,
+)
 from minesweeper_ml.data import encode_board_features, encode_board_state
 from minesweeper_ml.game import Cell, Coordinate
 from minesweeper_ml.lookahead import evaluate_safe_click
+from minesweeper_ml.symmetry import predict_spatial_maps
 
 
 class PredictionModel(Protocol):
     def predict(self, board, verbose: int = 0):
         ...
+
+
+@dataclass(frozen=True)
+class BotDecision:
+    move: Coordinate
+    strategy: str
+    mine_probabilities: tuple[tuple[Coordinate, float], ...]
+    eligible_candidates: tuple[Coordinate, ...]
+    probability_gap: float | None
 
 
 class RuleBasedMinesweeperBot:
@@ -193,6 +207,10 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
         lookahead_max_candidates: int = 4,
         lookahead_max_nodes: int = 100_000,
         lookahead_min_outcome_probability: float = 1e-6,
+        exact_lookahead: bool = False,
+        symmetry_ensemble: bool = False,
+        use_candidate_value: bool = True,
+        value_tie_margin: float = 0.01,
         cnn_input: bool = True,
     ):
         super().__init__(width, height)
@@ -216,6 +234,8 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
             raise ValueError(
                 "lookahead_min_outcome_probability must be between zero and one."
             )
+        if value_tie_margin < 0.0:
+            raise ValueError("value_tie_margin must be non-negative.")
         self.ml_model = ml_model
         self.mine_count = mine_count
         self.max_constraint_nodes = max_constraint_nodes
@@ -227,8 +247,16 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
         self.lookahead_min_outcome_probability = (
             lookahead_min_outcome_probability
         )
+        self.exact_lookahead = exact_lookahead
+        self.symmetry_ensemble = symmetry_ensemble
+        self.use_candidate_value = use_candidate_value
+        self.value_tie_margin = value_tie_margin
         self.cnn_input = cnn_input
         self.last_move_strategy: str | None = None
+        self.last_decision: BotDecision | None = None
+        self._decision_probabilities: dict[Coordinate, float] = {}
+        self._decision_eligible_candidates: tuple[Coordinate, ...] = ()
+        self._decision_probability_gap: float | None = None
         self.strategy_stats = {
             "deduction": 0,
             "box": 0,
@@ -244,13 +272,23 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
     def get_next_move(self, visible_map: list[list[Cell]]) -> Coordinate | None:
         import numpy as np
 
+        self.last_decision = None
+        self._set_decision_probabilities({}, 0)
         rule_move = self._get_rule_move(visible_map)
         if rule_move is not None:
             return self._record_move(rule_move, "deduction")
 
-        predictions = np.asarray(
-            self.ml_model.predict(self.preprocess_board_state(visible_map), verbose=0)
-        ).reshape(-1)
+        prediction_maps = predict_spatial_maps(
+            self.ml_model,
+            self.preprocess_board_state(visible_map),
+            symmetry_ensemble=self.symmetry_ensemble,
+        )
+        predictions = np.asarray(prediction_maps["safety"]).reshape(-1)
+        value_predictions = (
+            np.asarray(prediction_maps["value"]).reshape(-1)
+            if "value" in prediction_maps
+            else None
+        )
         deduced_mines = set(self.deduced_mines)
         hidden_cells = set(self._available_moves(visible_map, deduced_mines))
         constraints = self._number_constraints(
@@ -278,7 +316,7 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
             if self.mine_count is None
             else self.mine_count - len(deduced_mines)
         )
-        inference = infer_mine_probabilities(
+        inference = build_constraint_context(
             constraints,
             hidden_cells=hidden_cells,
             model_mine_probabilities=model_mine_probabilities,
@@ -308,6 +346,10 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
                 if mine_probability <= 1e-12
             }
             if certain_safe:
+                self._set_decision_probabilities(
+                    posterior_candidates,
+                    len(hidden_cells),
+                )
                 move = self._lowest_probability_move(
                     certain_safe,
                     visible_map,
@@ -315,6 +357,10 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
                 )
                 return self._record_move(move, "deduction")
             if posterior_candidates and inference.overflowed_boxes == 0:
+                self._set_decision_probabilities(
+                    posterior_candidates,
+                    len(hidden_cells),
+                )
                 move = self._select_posterior_move(
                     posterior_candidates,
                     visible_map=visible_map,
@@ -323,6 +369,22 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
                     hidden_cells=hidden_cells,
                     model_mine_probabilities=model_mine_probabilities,
                     remaining_mines=remaining_mines,
+                    inference_context=inference,
+                    candidate_values=(
+                        {
+                            cell: float(
+                                value_predictions[
+                                    cell[1] * self.width + cell[0]
+                                ]
+                            )
+                            for cell in posterior_candidates
+                        }
+                        if (
+                            self.use_candidate_value
+                            and value_predictions is not None
+                        )
+                        else None
+                    ),
                 )
                 strategy = "box" if move in constrained_cells else "unconstrained"
                 return self._record_move(move, strategy)
@@ -340,6 +402,10 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
             clue_risks,
         )
         if inference.overflowed_boxes and posterior_candidates:
+            self._set_decision_probabilities(
+                posterior_candidates,
+                len(hidden_cells),
+            )
             candidates_by_move = {}
             for candidate in neighbor_candidates:
                 _, _, x, y = candidate
@@ -357,6 +423,13 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
             return self._record_move(move, strategy)
 
         if neighbor_candidates:
+            self._set_decision_probabilities(
+                {
+                    (x, y): 1.0 - model_safety
+                    for _, model_safety, x, y in neighbor_candidates
+                },
+                len(hidden_cells),
+            )
             move = self._best_candidate(
                 neighbor_candidates,
                 visible_map,
@@ -473,6 +546,8 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
         hidden_cells: set[Coordinate],
         model_mine_probabilities: dict[Coordinate, float],
         remaining_mines: int | None,
+        inference_context=None,
+        candidate_values: dict[Coordinate, float] | None = None,
     ) -> Coordinate:
         lowest_probability = min(mine_probabilities.values())
         unresolved_hidden = hidden_cells - deduced_mines
@@ -491,12 +566,27 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
                 item[1][0],
             ),
         )
+        if candidate_values:
+            highest_value = max(
+                candidate_values.get(move, 0.0)
+                for _, move in eligible_candidates
+            )
+            eligible_candidates = [
+                item
+                for item in eligible_candidates
+                if highest_value
+                - candidate_values.get(item[1], 0.0)
+                <= self.value_tie_margin
+            ]
         if (
             self.lookahead_max_candidates == 0
             or len(eligible_candidates) <= 1
         ):
             return self._lowest_probability_move(
-                mine_probabilities,
+                {
+                    move: mine_probability
+                    for mine_probability, move in eligible_candidates
+                },
                 visible_map,
                 deduced_mines,
             )
@@ -530,21 +620,24 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
                 neighbor in deduced_mines
                 for neighbor in self._neighbors(*move)
             )
-            evaluation = evaluate_safe_click(
-                move,
-                hidden_neighbors=hidden_neighbors,
-                has_known_mine_neighbor=has_known_mine_neighbor,
-                constraints=constraints,
-                hidden_cells=hidden_cells,
-                model_mine_probabilities=model_mine_probabilities,
-                remaining_mines=remaining_mines,
-                prior_strength=self.model_prior_strength,
-                max_constraint_nodes=self.max_constraint_nodes,
-                max_total_search_nodes=remaining_node_budget,
-                min_outcome_probability=(
+            evaluation_options = {
+                "hidden_neighbors": hidden_neighbors,
+                "has_known_mine_neighbor": has_known_mine_neighbor,
+                "constraints": constraints,
+                "hidden_cells": hidden_cells,
+                "model_mine_probabilities": model_mine_probabilities,
+                "remaining_mines": remaining_mines,
+                "prior_strength": self.model_prior_strength,
+                "max_constraint_nodes": self.max_constraint_nodes,
+                "max_total_search_nodes": remaining_node_budget,
+                "min_outcome_probability": (
                     self.lookahead_min_outcome_probability
                 ),
-            )
+                "exact_outcomes": self.exact_lookahead,
+            }
+            if inference_context is not None:
+                evaluation_options["inference_context"] = inference_context
+            evaluation = evaluate_safe_click(move, **evaluation_options)
             evaluations[move] = evaluation
             remaining_node_budget -= evaluation.search_nodes
             self.strategy_stats[
@@ -610,7 +703,46 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
     def _record_move(self, move: Coordinate, strategy: str) -> Coordinate:
         self.last_move_strategy = strategy
         self.strategy_stats[strategy] += 1
+        self.last_decision = BotDecision(
+            move=move,
+            strategy=strategy,
+            mine_probabilities=tuple(
+                sorted(
+                    self._decision_probabilities.items(),
+                    key=lambda item: _move_sort_key(item[0]),
+                )
+            ),
+            eligible_candidates=self._decision_eligible_candidates,
+            probability_gap=self._decision_probability_gap,
+        )
         return move
+
+    def _set_decision_probabilities(
+        self,
+        mine_probabilities: dict[Coordinate, float],
+        hidden_count: int,
+    ) -> None:
+        self._decision_probabilities = dict(mine_probabilities)
+        if not mine_probabilities:
+            self._decision_eligible_candidates = ()
+            self._decision_probability_gap = None
+            return
+        ordered = sorted(
+            mine_probabilities.items(),
+            key=lambda item: (item[1], item[0][1], item[0][0]),
+        )
+        minimum = ordered[0][1]
+        self._decision_probability_gap = (
+            ordered[1][1] - minimum
+            if len(ordered) > 1
+            else None
+        )
+        margin = self._effective_tie_margin(hidden_count)
+        self._decision_eligible_candidates = tuple(
+            move
+            for move, probability in ordered
+            if probability - minimum <= margin
+        )
 
     def _information_gain(
         self,

@@ -1,5 +1,6 @@
 import unittest
 
+from minesweeper_ml.constraints import build_constraint_context
 from minesweeper_ml.lookahead import (
     evaluate_safe_click,
     poisson_binomial_distribution,
@@ -64,18 +65,53 @@ class PosteriorLookaheadTest(unittest.TestCase):
         self.assertAlmostEqual(0.0, result.expected_entropy_reduction)
         self.assertAlmostEqual(0.0, result.zero_region_probability)
 
-    def test_shared_budget_exhaustion_returns_invalid_evaluation(self):
+    def test_reuses_context_and_scores_only_legal_clue_outcome(self):
         candidate = (0, 0)
+        neighbors = frozenset({(1, 0), (2, 0)})
+        hidden_cells = {candidate, *neighbors}
+        priors = {cell: 0.5 for cell in hidden_cells}
+        context = build_constraint_context(
+            [(neighbors, 1)],
+            hidden_cells=hidden_cells,
+            model_mine_probabilities=priors,
+            remaining_mines=None,
+            prior_strength=1.0,
+            max_search_nodes=1_000,
+        )
 
         result = evaluate_safe_click(
             candidate,
-            hidden_neighbors=frozenset({(1, 0)}),
+            hidden_neighbors=neighbors,
             has_known_mine_neighbor=False,
-            constraints=[],
-            hidden_cells={candidate, (1, 0)},
+            constraints=[(neighbors, 1)],
+            hidden_cells=hidden_cells,
+            model_mine_probabilities=priors,
+            remaining_mines=None,
+            prior_strength=1.0,
+            max_constraint_nodes=1_000,
+            max_total_search_nodes=1,
+            min_outcome_probability=1e-6,
+            inference_context=context,
+        )
+
+        self.assertTrue(result.valid)
+        self.assertEqual(0, result.search_nodes)
+        self.assertAlmostEqual(0.0, result.expected_forced_cells)
+        self.assertAlmostEqual(0.0, result.zero_region_probability)
+
+    def test_shared_budget_exhaustion_returns_invalid_evaluation(self):
+        candidate = (0, 0)
+        neighbor = (1, 0)
+
+        result = evaluate_safe_click(
+            candidate,
+            hidden_neighbors=frozenset({neighbor}),
+            has_known_mine_neighbor=False,
+            constraints=[(frozenset({candidate, neighbor}), 1)],
+            hidden_cells={candidate, neighbor},
             model_mine_probabilities={
                 candidate: 0.5,
-                (1, 0): 0.5,
+                neighbor: 0.5,
             },
             remaining_mines=None,
             prior_strength=1.0,
@@ -90,16 +126,17 @@ class PosteriorLookaheadTest(unittest.TestCase):
 
     def test_per_box_overflow_is_not_reported_as_budget_exhaustion(self):
         candidate = (0, 0)
+        neighbor = (1, 0)
 
         result = evaluate_safe_click(
             candidate,
-            hidden_neighbors=frozenset({(1, 0)}),
+            hidden_neighbors=frozenset({neighbor}),
             has_known_mine_neighbor=False,
-            constraints=[],
-            hidden_cells={candidate, (1, 0)},
+            constraints=[(frozenset({candidate, neighbor}), 1)],
+            hidden_cells={candidate, neighbor},
             model_mine_probabilities={
                 candidate: 0.5,
-                (1, 0): 0.5,
+                neighbor: 0.5,
             },
             remaining_mines=None,
             prior_strength=1.0,

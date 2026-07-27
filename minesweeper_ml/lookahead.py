@@ -3,7 +3,13 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from minesweeper_ml.constraints import Constraint, infer_mine_probabilities
+from minesweeper_ml.constraints import (
+    Constraint,
+    ConstraintInferenceContext,
+    build_constraint_context,
+    infer_safe_click_outcomes,
+    infer_mine_probabilities,
+)
 from minesweeper_ml.game import Coordinate
 
 
@@ -52,6 +58,8 @@ def evaluate_safe_click(
     max_constraint_nodes: int,
     max_total_search_nodes: int,
     min_outcome_probability: float,
+    inference_context: ConstraintInferenceContext | None = None,
+    exact_outcomes: bool = True,
 ) -> LookaheadEvaluation:
     if max_total_search_nodes <= 0:
         raise ValueError("max_total_search_nodes must be greater than zero.")
@@ -59,13 +67,24 @@ def evaluate_safe_click(
         raise ValueError(
             "min_outcome_probability must be between zero and one."
         )
+    if not exact_outcomes:
+        return _evaluate_independent_safe_click(
+            candidate,
+            hidden_neighbors=hidden_neighbors,
+            has_known_mine_neighbor=has_known_mine_neighbor,
+            constraints=constraints,
+            hidden_cells=hidden_cells,
+            model_mine_probabilities=model_mine_probabilities,
+            remaining_mines=remaining_mines,
+            prior_strength=prior_strength,
+            max_constraint_nodes=max_constraint_nodes,
+            max_total_search_nodes=max_total_search_nodes,
+            min_outcome_probability=min_outcome_probability,
+        )
 
-    safe_constraints = [
-        *constraints,
-        (frozenset({candidate}), 0),
-    ]
-    conditioned = infer_mine_probabilities(
-        safe_constraints,
+    reused_context = inference_context is not None
+    context = inference_context or build_constraint_context(
+        constraints,
         hidden_cells=hidden_cells,
         model_mine_probabilities=model_mine_probabilities,
         remaining_mines=remaining_mines,
@@ -73,28 +92,27 @@ def evaluate_safe_click(
         max_search_nodes=max_constraint_nodes,
         max_total_search_nodes=max_total_search_nodes,
     )
-    search_nodes = conditioned.search_nodes
+    search_nodes = 0 if reused_context else context.search_nodes
     if (
-        conditioned.budget_exhausted
-        or conditioned.overflowed_boxes
-        or not conditioned.consistent
+        context.budget_exhausted
+        or context.overflowed_boxes
+        or not context.consistent
+        or not context.complete
     ):
         return _invalid_evaluation(
             search_nodes,
-            budget_exhausted=conditioned.budget_exhausted,
+            budget_exhausted=context.budget_exhausted,
         )
 
-    conditioned_probabilities = _complete_probabilities(
-        hidden_cells,
-        model_mine_probabilities,
-        conditioned.mine_probabilities,
+    conditioned = infer_safe_click_outcomes(
+        context,
+        candidate,
+        hidden_neighbors,
     )
-    outcome_distribution = poisson_binomial_distribution(
-        [
-            conditioned_probabilities[neighbor]
-            for neighbor in sorted(hidden_neighbors, key=_coordinate_sort_key)
-        ]
-    )
+    if not conditioned.consistent:
+        return _invalid_evaluation(search_nodes, budget_exhausted=False)
+    conditioned_probabilities = conditioned.mine_probabilities
+    outcome_distribution = conditioned.outcome_probabilities
     scored_cells = hidden_cells - {candidate}
     baseline_forced = _forced_cells(
         scored_cells,
@@ -119,42 +137,8 @@ def evaluate_safe_click(
         ):
             continue
 
-        remaining_node_budget = max_total_search_nodes - search_nodes
-        if remaining_node_budget <= 0:
-            return _invalid_evaluation(
-                search_nodes,
-                budget_exhausted=True,
-            )
-        outcome = infer_mine_probabilities(
-            [
-                *safe_constraints,
-                (hidden_neighbors, mine_count),
-            ],
-            hidden_cells=hidden_cells,
-            model_mine_probabilities=model_mine_probabilities,
-            remaining_mines=remaining_mines,
-            prior_strength=prior_strength,
-            max_search_nodes=max_constraint_nodes,
-            max_total_search_nodes=remaining_node_budget,
-        )
-        search_nodes += outcome.search_nodes
-        if outcome.budget_exhausted:
-            return _invalid_evaluation(
-                search_nodes,
-                budget_exhausted=True,
-            )
-        if outcome.overflowed_boxes:
-            return _invalid_evaluation(
-                search_nodes,
-                budget_exhausted=False,
-            )
-        if not outcome.consistent:
-            continue
-
-        outcome_probabilities = _complete_probabilities(
-            hidden_cells,
-            model_mine_probabilities,
-            outcome.mine_probabilities,
+        outcome_probabilities = (
+            conditioned.mine_probabilities_by_outcome[mine_count]
         )
         outcome_forced = _forced_cells(
             scored_cells,
@@ -185,6 +169,123 @@ def evaluate_safe_click(
             weighted_entropy_reduction / valid_outcome_mass
         ),
         zero_region_probability=zero_region_mass / valid_outcome_mass,
+        search_nodes=search_nodes,
+        budget_exhausted=False,
+        valid=True,
+    )
+
+
+def _evaluate_independent_safe_click(
+    candidate: Coordinate,
+    *,
+    hidden_neighbors: frozenset[Coordinate],
+    has_known_mine_neighbor: bool,
+    constraints: list[Constraint],
+    hidden_cells: set[Coordinate],
+    model_mine_probabilities: dict[Coordinate, float],
+    remaining_mines: int | None,
+    prior_strength: float,
+    max_constraint_nodes: int,
+    max_total_search_nodes: int,
+    min_outcome_probability: float,
+) -> LookaheadEvaluation:
+    safe_constraints = [*constraints, (frozenset({candidate}), 0)]
+    conditioned = infer_mine_probabilities(
+        safe_constraints,
+        hidden_cells=hidden_cells,
+        model_mine_probabilities=model_mine_probabilities,
+        remaining_mines=remaining_mines,
+        prior_strength=prior_strength,
+        max_search_nodes=max_constraint_nodes,
+        max_total_search_nodes=max_total_search_nodes,
+    )
+    search_nodes = conditioned.search_nodes
+    if (
+        conditioned.budget_exhausted
+        or conditioned.overflowed_boxes
+        or not conditioned.consistent
+    ):
+        return _invalid_evaluation(
+            search_nodes,
+            budget_exhausted=conditioned.budget_exhausted,
+        )
+    conditioned_probabilities = _complete_probabilities(
+        hidden_cells,
+        model_mine_probabilities,
+        conditioned.mine_probabilities,
+    )
+    outcome_distribution = poisson_binomial_distribution(
+        [
+            conditioned_probabilities[neighbor]
+            for neighbor in sorted(
+                hidden_neighbors,
+                key=_coordinate_sort_key,
+            )
+        ]
+    )
+    scored_cells = hidden_cells - {candidate}
+    baseline_forced = _forced_cells(
+        scored_cells,
+        conditioned_probabilities,
+    )
+    baseline_entropy = _total_entropy(
+        scored_cells,
+        conditioned_probabilities,
+    )
+    valid_mass = forced_mass = entropy_mass = zero_mass = 0.0
+    for mine_count, probability in sorted(outcome_distribution.items()):
+        if probability <= 0.0 or probability < min_outcome_probability:
+            continue
+        remaining_nodes = max_total_search_nodes - search_nodes
+        if remaining_nodes <= 0:
+            return _invalid_evaluation(
+                search_nodes,
+                budget_exhausted=True,
+            )
+        outcome = infer_mine_probabilities(
+            [*safe_constraints, (hidden_neighbors, mine_count)],
+            hidden_cells=hidden_cells,
+            model_mine_probabilities=model_mine_probabilities,
+            remaining_mines=remaining_mines,
+            prior_strength=prior_strength,
+            max_search_nodes=max_constraint_nodes,
+            max_total_search_nodes=remaining_nodes,
+        )
+        search_nodes += outcome.search_nodes
+        if outcome.budget_exhausted:
+            return _invalid_evaluation(
+                search_nodes,
+                budget_exhausted=True,
+            )
+        if outcome.overflowed_boxes:
+            return _invalid_evaluation(
+                search_nodes,
+                budget_exhausted=False,
+            )
+        if not outcome.consistent:
+            continue
+        probabilities = _complete_probabilities(
+            hidden_cells,
+            model_mine_probabilities,
+            outcome.mine_probabilities,
+        )
+        forced = _forced_cells(scored_cells, probabilities)
+        valid_mass += probability
+        forced_mass += probability * len(forced - baseline_forced)
+        entropy_mass += probability * (
+            baseline_entropy - _total_entropy(scored_cells, probabilities)
+        )
+        if mine_count == 0 and not has_known_mine_neighbor:
+            zero_mass += probability
+    if valid_mass <= 0.0:
+        return _invalid_evaluation(
+            search_nodes,
+            budget_exhausted=False,
+        )
+    return LookaheadEvaluation(
+        expected_forced_cells=forced_mass / valid_mass,
+        expected_entropy_reduction=entropy_mass / valid_mass,
+        zero_region_probability=zero_mass / valid_mass,
         search_nodes=search_nodes,
         budget_exhausted=False,
         valid=True,

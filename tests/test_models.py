@@ -26,7 +26,11 @@ class FakeFunctionalModel:
         self.kind = "functional"
         self.inputs = inputs
         self.outputs = outputs
-        self.layers = outputs.layers
+        self.layers = (
+            outputs.layers
+            if isinstance(outputs, FakeTensor)
+            else next(iter(outputs.values())).layers
+        )
         self.compile_options = None
 
     def compile(self, **options):
@@ -98,3 +102,42 @@ class ModelBuilderTest(unittest.TestCase):
             "masked_accuracy",
             model.compile_options["weighted_metrics"][0].name,
         )
+
+    def test_multitask_cnn_has_named_safety_and_value_heads(self):
+        with patch.dict(sys.modules, fake_keras_modules()):
+            model = build_cnn_model(
+                width=5,
+                height=4,
+                value_head=True,
+            )
+
+        self.assertEqual({"safety", "value"}, set(model.outputs))
+        self.assertEqual(
+            "binary_crossentropy",
+            model.compile_options["loss"]["safety"],
+        )
+        self.assertEqual(
+            "binary_crossentropy",
+            model.compile_options["loss"]["value"],
+        )
+
+    def test_paper_architecture_uses_wider_five_by_five_layers(self):
+        with patch.dict(sys.modules, fake_keras_modules()):
+            model = build_cnn_model(
+                width=10,
+                height=10,
+                architecture="paper_5x5",
+            )
+
+        spatial_layers = model.layers[:-1]
+        self.assertTrue(
+            all(layer.config["kernel_size"] == (5, 5) for layer in spatial_layers)
+        )
+        self.assertGreater(
+            max(layer.config["filters"] for layer in spatial_layers),
+            64,
+        )
+
+    def test_unknown_architecture_is_rejected_without_tensorflow(self):
+        with self.assertRaises(ValueError):
+            build_cnn_model(5, 5, architecture="unknown")

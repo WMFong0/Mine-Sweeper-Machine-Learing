@@ -70,6 +70,12 @@ class CliTest(unittest.TestCase):
 
         self.assertEqual(42, args.seed)
         self.assertEqual(100, args.eval_games)
+        self.assertEqual(500, args.dev_games)
+
+    def test_upgrade_mode_has_a_checkpoint_output(self):
+        args = build_parser().parse_args(["--mode", "train-upgrade"])
+
+        self.assertEqual("minesweeper_upgraded.keras", args.model_out)
 
     def test_smoke_mode_evaluates_two_seeded_games(self):
         args = build_parser().parse_args(["--mode", "smoke"])

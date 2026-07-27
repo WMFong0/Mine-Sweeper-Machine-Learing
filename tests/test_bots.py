@@ -522,15 +522,58 @@ class MLMinesweeperBotTest(unittest.TestCase):
             model_prior_strength=0.75,
             tie_margin=0.01,
             lookahead_max_candidates=4,
+            exact_lookahead=True,
         )
 
         self.assertEqual((2, 2), baseline.get_next_move(visible_map))
         self.assertEqual((4, 3), lookahead.get_next_move(visible_map))
         self.assertEqual(1, lookahead.strategy_stats["lookahead_decisions"])
-        self.assertGreater(
-            lookahead.strategy_stats["lookahead_search_nodes"],
+        self.assertEqual(
             0,
+            lookahead.strategy_stats["lookahead_search_nodes"],
         )
+
+    def test_value_head_reorders_only_posterior_tied_candidates(self):
+        bot = MLMinesweeperBot(
+            3,
+            1,
+            ScoreMapPredictionModel([[0.5, 0.5, 0.5]]),
+            tie_margin=0.01,
+            lookahead_max_candidates=0,
+        )
+        visible_map = [["-", "-", "-"]]
+
+        tied = bot._select_posterior_move(
+            {(0, 0): 0.10, (1, 0): 0.105, (2, 0): 0.20},
+            visible_map=visible_map,
+            deduced_mines=set(),
+            constraints=[],
+            hidden_cells={(0, 0), (1, 0), (2, 0)},
+            model_mine_probabilities={
+                (0, 0): 0.5,
+                (1, 0): 0.5,
+                (2, 0): 0.5,
+            },
+            remaining_mines=None,
+            candidate_values={(0, 0): 0.1, (1, 0): 0.9, (2, 0): 1.0},
+        )
+        materially_safer = bot._select_posterior_move(
+            {(0, 0): 0.10, (1, 0): 0.12},
+            visible_map=visible_map,
+            deduced_mines=set(),
+            constraints=[],
+            hidden_cells={(0, 0), (1, 0), (2, 0)},
+            model_mine_probabilities={
+                (0, 0): 0.5,
+                (1, 0): 0.5,
+                (2, 0): 0.5,
+            },
+            remaining_mines=None,
+            candidate_values={(0, 0): 0.1, (1, 0): 1.0},
+        )
+
+        self.assertEqual((1, 0), tied)
+        self.assertEqual((0, 0), materially_safer)
 
     def test_global_mine_budget_records_a_certain_safe_cell_as_a_deduction(self):
         model = ScoreMapPredictionModel(
