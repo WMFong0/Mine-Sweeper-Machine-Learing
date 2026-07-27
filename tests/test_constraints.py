@@ -1,8 +1,13 @@
+import itertools
+import math
+import random
 import unittest
 
 from minesweeper_ml.constraints import (
+    build_constraint_context,
     build_constraint_boxes,
     enumerate_constraint_box,
+    infer_safe_click_outcomes,
     infer_mine_probabilities,
 )
 
@@ -85,6 +90,40 @@ class ConstraintBoxTest(unittest.TestCase):
         self.assertAlmostEqual(1.0, result.mine_probabilities[middle])
         self.assertAlmostEqual(0.0, result.mine_probabilities[last])
         self.assertAlmostEqual(0.0, result.mine_probabilities[unconstrained])
+        self.assertFalse(result.budget_exhausted)
+
+    def test_total_search_budget_stops_conditional_inference(self):
+        cells = {(0, 0), (1, 0), (3, 0), (4, 0)}
+
+        result = infer_mine_probabilities(
+            [
+                (frozenset({(0, 0), (1, 0)}), 1),
+                (frozenset({(3, 0), (4, 0)}), 1),
+            ],
+            hidden_cells=cells,
+            model_mine_probabilities={cell: 0.5 for cell in cells},
+            remaining_mines=2,
+            prior_strength=1.0,
+            max_search_nodes=100,
+            max_total_search_nodes=4,
+        )
+
+        self.assertTrue(result.budget_exhausted)
+        self.assertLessEqual(result.search_nodes, 4)
+        self.assertEqual(0, result.overflowed_boxes)
+        self.assertFalse(result.globally_coupled)
+
+    def test_rejects_non_positive_total_search_budget(self):
+        with self.assertRaises(ValueError):
+            infer_mine_probabilities(
+                [],
+                hidden_cells=set(),
+                model_mine_probabilities={},
+                remaining_mines=0,
+                prior_strength=1.0,
+                max_search_nodes=100,
+                max_total_search_nodes=0,
+            )
 
     def test_overflow_keeps_completed_local_boxes_without_global_coupling(self):
         solved = (0, 0)
@@ -159,6 +198,171 @@ class ConstraintBoxTest(unittest.TestCase):
         self.assertFalse(result.consistent)
         self.assertFalse(result.globally_coupled)
         self.assertEqual({}, result.mine_probabilities)
+
+    def test_safe_click_outcomes_preserve_correlated_neighbor_counts(self):
+        candidate = (0, 0)
+        neighbors = frozenset({(1, 0), (2, 0)})
+        hidden_cells = {candidate, *neighbors}
+        context = build_constraint_context(
+            [(neighbors, 1)],
+            hidden_cells=hidden_cells,
+            model_mine_probabilities={cell: 0.5 for cell in hidden_cells},
+            remaining_mines=None,
+            prior_strength=1.0,
+            max_search_nodes=1_000,
+        )
+
+        result = infer_safe_click_outcomes(
+            context,
+            candidate,
+            neighbors,
+        )
+
+        self.assertTrue(result.consistent)
+        self.assertEqual({1: 1.0}, result.outcome_probabilities)
+        self.assertAlmostEqual(
+            0.5,
+            result.mine_probabilities_by_outcome[1][(1, 0)],
+        )
+        self.assertAlmostEqual(
+            0.5,
+            result.mine_probabilities_by_outcome[1][(2, 0)],
+        )
+
+    def test_safe_click_outcomes_honor_global_mine_budget(self):
+        candidate = (0, 0)
+        first = (1, 0)
+        second = (2, 0)
+        outside = (4, 0)
+        hidden_cells = {candidate, first, second, outside}
+        context = build_constraint_context(
+            [(frozenset({first, second}), 1)],
+            hidden_cells=hidden_cells,
+            model_mine_probabilities={
+                candidate: 0.5,
+                first: 0.5,
+                second: 0.5,
+                outside: 0.9,
+            },
+            remaining_mines=1,
+            prior_strength=1.0,
+            max_search_nodes=1_000,
+        )
+
+        result = infer_safe_click_outcomes(
+            context,
+            candidate,
+            frozenset({first, outside}),
+        )
+
+        self.assertTrue(result.consistent)
+        self.assertEqual({0: 0.5, 1: 0.5}, result.outcome_probabilities)
+        self.assertEqual(
+            0.0,
+            result.mine_probabilities_by_outcome[0][first],
+        )
+        self.assertEqual(
+            1.0,
+            result.mine_probabilities_by_outcome[1][first],
+        )
+
+    def test_exact_outcomes_match_randomized_brute_force(self):
+        rng = random.Random(9182)
+        cells = tuple((index, 0) for index in range(5))
+        candidate = cells[0]
+        query = frozenset(cells[1:4])
+
+        for case in range(100):
+            planted = (0, *(rng.randrange(2) for _ in cells[1:]))
+            remaining_mines = sum(planted)
+            constraints = [
+                (frozenset(cells), remaining_mines),
+                *[
+                    (
+                        frozenset(subset),
+                        sum(
+                            planted[cells.index(cell)]
+                            for cell in subset
+                        ),
+                    )
+                    for subset in (
+                        rng.sample(cells, rng.randrange(2, len(cells)))
+                        for _ in range(2)
+                    )
+                ],
+            ]
+            priors = {
+                cell: rng.uniform(0.1, 0.9)
+                for cell in cells
+            }
+            expected_weights = {}
+            expected_mines = {}
+            for assignment in itertools.product((0, 1), repeat=len(cells)):
+                if (
+                    assignment[0]
+                    or sum(assignment) != remaining_mines
+                    or any(
+                        sum(
+                            assignment[cells.index(cell)]
+                            for cell in constrained_cells
+                        )
+                        != target
+                        for constrained_cells, target in constraints
+                    )
+                ):
+                    continue
+                outcome = sum(
+                    assignment[cells.index(cell)]
+                    for cell in query
+                )
+                weight = (
+                    math.prod(
+                        priors[cell]
+                        if assignment[index]
+                        else 1.0 - priors[cell]
+                        for index, cell in enumerate(cells)
+                    )
+                    ** 0.75
+                )
+                expected_weights[outcome] = (
+                    expected_weights.get(outcome, 0.0) + weight
+                )
+                for index, cell in enumerate(cells):
+                    if assignment[index]:
+                        expected_mines[outcome, cell] = (
+                            expected_mines.get((outcome, cell), 0.0)
+                            + weight
+                        )
+            expected_total = sum(expected_weights.values())
+            context = build_constraint_context(
+                constraints,
+                hidden_cells=set(cells),
+                model_mine_probabilities=priors,
+                remaining_mines=remaining_mines,
+                prior_strength=0.75,
+                max_search_nodes=10_000,
+            )
+            result = infer_safe_click_outcomes(
+                context,
+                candidate,
+                query,
+            )
+
+            with self.subTest(case=case):
+                self.assertTrue(result.consistent)
+                for outcome, weight in expected_weights.items():
+                    self.assertAlmostEqual(
+                        weight / expected_total,
+                        result.outcome_probabilities[outcome],
+                    )
+                    for cell in cells:
+                        self.assertAlmostEqual(
+                            expected_mines.get((outcome, cell), 0.0)
+                            / weight,
+                            result.mine_probabilities_by_outcome[
+                                outcome
+                            ][cell],
+                        )
 
 
 if __name__ == "__main__":

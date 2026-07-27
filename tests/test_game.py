@@ -71,3 +71,20 @@ class MinesweeperGameTest(unittest.TestCase):
 
         self.assertIs(game.toggle_flag(1, 1), False)
         self.assertEqual("-", game.visible_map[1][1])
+
+    def test_clone_preserves_state_without_sharing_visible_rows(self):
+        game = MinesweeperGame(
+            width=3,
+            height=2,
+            mine_count=1,
+            mine_locations=[(2, 1)],
+        )
+        game.open_cell(0, 0)
+
+        cloned = game.clone()
+        cloned.visible_map[0][0] = "-"
+
+        self.assertEqual(game.mine_locations, cloned.mine_locations)
+        self.assertEqual(game.remaining_cells, cloned.remaining_cells)
+        self.assertEqual(game.state, cloned.state)
+        self.assertNotEqual(game.visible_map, cloned.visible_map)

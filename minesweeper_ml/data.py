@@ -2,15 +2,11 @@ from __future__ import annotations
 
 import copy
 import random
+from collections.abc import Callable
 
 from minesweeper_ml.game import Cell, GameState, MinesweeperGame
 
 
-POLICY_WEIGHTS = {
-    "rule": 0.5,
-    "frontier": 0.3,
-    "global": 0.2,
-}
 PHASES = ("early", "middle", "late")
 
 
@@ -84,20 +80,36 @@ def run_single_bot_game_and_collect_data(
     *,
     seed: int | None = None,
     game_id: int = 0,
+    mine_locations: list[tuple[int, int]] | None = None,
+    bot_factory: Callable[[int, int, int], object] | None = None,
+    max_samples_per_phase: int = 4,
+    loss_weight: float = 2.0,
+    close_probability_threshold: float = 0.01,
+    close_probability_weight: float = 2.0,
+    value_rollout_candidates: int = 2,
+    value_rollout_max_moves: int = 200,
 ):
-    from minesweeper_ml.bots import RuleBasedMinesweeperBot
-
     rng = random.Random(seed)
+    if max_samples_per_phase <= 0:
+        raise ValueError("max_samples_per_phase must be greater than zero.")
+    if loss_weight <= 0.0 or close_probability_weight <= 0.0:
+        raise ValueError("trajectory weights must be greater than zero.")
+    if close_probability_threshold < 0.0:
+        raise ValueError(
+            "close_probability_threshold must be non-negative."
+        )
+    if value_rollout_candidates < 0 or value_rollout_max_moves <= 0:
+        raise ValueError("value rollout limits must be non-negative.")
     game = MinesweeperGame(
         width=width,
         height=height,
         mine_count=mine_count,
+        mine_locations=mine_locations,
         seed=rng.randrange(2**63),
-        first_safe=True,
+        first_safe=mine_locations is None,
     )
-
-    bot = RuleBasedMinesweeperBot(width, height)
-    phase_samples: dict[str, dict] = {}
+    bot = (bot_factory or _default_bot_factory)(width, height, mine_count)
+    samples = []
     phase_counts = {phase: 0 for phase in PHASES}
 
     game.open_cell(0, 0)
@@ -106,62 +118,98 @@ def run_single_bot_game_and_collect_data(
 
     while game.state == GameState.IN_PROGRESS:
         board_state = copy.deepcopy(game.visible_map)
-        ground_truth_map = copy.deepcopy(game.mine_map)
         training_mask = frontier_mask(board_state)
-        rule_move = bot.get_next_move(game.visible_map)
-        safe_hidden_moves = _safe_hidden_moves(game)
-        safe_frontier_moves = [
-            (x, y)
-            for x, y in safe_hidden_moves
-            if training_mask[y][x]
-        ]
-
-        policy_moves = []
-        if rule_move is not None:
-            policy_moves.append(("rule", [rule_move], POLICY_WEIGHTS["rule"]))
-        if safe_frontier_moves:
-            policy_moves.append(("frontier", safe_frontier_moves, POLICY_WEIGHTS["frontier"]))
-        if safe_hidden_moves:
-            policy_moves.append(("global", safe_hidden_moves, POLICY_WEIGHTS["global"]))
-
-        if not policy_moves:
+        move = bot.get_next_move(copy.deepcopy(game.visible_map))
+        if move is None:
+            game.state = GameState.STOPPED
+            break
+        x, y = move
+        if game.visible_map[y][x] != "-":
+            game.state = GameState.STOPPED
             break
 
-        selected_policy, candidates, _ = rng.choices(
-            policy_moves,
-            weights=[policy[2] for policy in policy_moves],
-            k=1,
-        )[0]
-        x, y = rng.choice(candidates)
-
-        if any(value for row in training_mask for value in row):
+        strategy = getattr(bot, "last_move_strategy", None) or "policy"
+        if (
+            strategy != "deduction"
+            and any(map(any, training_mask))
+        ):
             phase = _game_phase(game)
-            phase_counts[phase] += 1
-            sample = {
-                "game_id": game_id,
-                "layout_id": tuple(sorted(game.mine_locations)),
-                "phase": phase,
-                "policy": selected_policy,
-                "board_state": board_state,
-                "ground_truth_map": ground_truth_map,
-                "training_mask": training_mask,
-                "chosen_move": (x, y),
-                "is_safe": game.mine_map[y][x] != "M",
-            }
-            if rng.randrange(phase_counts[phase]) == 0:
-                phase_samples[phase] = sample
+            if phase_counts[phase] < max_samples_per_phase:
+                decision = getattr(bot, "last_decision", None)
+                eligible_candidates = tuple(
+                    getattr(
+                        decision,
+                        "eligible_candidates",
+                        ((x, y),),
+                    )
+                )
+                value_targets, value_mask = evaluate_candidate_values(
+                    game,
+                    eligible_candidates or ((x, y),),
+                    bot_factory=bot_factory or _default_bot_factory,
+                    max_candidates=value_rollout_candidates,
+                    max_moves=value_rollout_max_moves,
+                )
+                samples.append(
+                    {
+                        "game_id": game_id,
+                        "phase": phase,
+                        "policy": strategy,
+                        "board_state": board_state,
+                        "training_mask": training_mask,
+                        "chosen_move": (x, y),
+                        "mine_probabilities": (
+                            tuple(
+                                getattr(
+                                    decision,
+                                    "mine_probabilities",
+                                    (),
+                                )
+                            )
+                            if decision is not None
+                            else ()
+                        ),
+                        "eligible_candidates": (
+                            eligible_candidates
+                            if decision is not None
+                            else ((x, y),)
+                        ),
+                        "probability_gap": (
+                            decision.probability_gap
+                            if decision is not None
+                            else None
+                        ),
+                        "value_targets": value_targets,
+                        "value_mask": value_mask,
+                    }
+                )
+                phase_counts[phase] += 1
 
         game.open_cell(x, y)
 
-    game_steps = []
-    for phase in PHASES:
-        if phase not in phase_samples:
-            continue
-        sample = phase_samples[phase]
-        sample["game_result"] = game.state
-        game_steps.append(sample)
-
-    return game_steps, game.state
+    ground_truth_map = copy.deepcopy(game.mine_map)
+    layout_id = tuple(sorted(game.mine_locations))
+    for sample in samples:
+        x, y = sample["chosen_move"]
+        sample.update(
+            {
+                "layout_id": layout_id,
+                "ground_truth_map": copy.deepcopy(ground_truth_map),
+                "is_safe": ground_truth_map[y][x] != "M",
+                "game_result": game.state,
+                "trajectory_weight": (
+                    (loss_weight if game.state == GameState.LOST else 1.0)
+                    * (
+                        close_probability_weight
+                        if sample["probability_gap"] is not None
+                        and sample["probability_gap"]
+                        <= close_probability_threshold
+                        else 1.0
+                    )
+                ),
+            }
+        )
+    return samples, game.state
 
 
 def generate_training_data(
@@ -172,6 +220,13 @@ def generate_training_data(
     *,
     seed: int | None = None,
     verbose: bool = False,
+    bot_factory: Callable[[int, int, int], object] | None = None,
+    max_samples_per_phase: int = 4,
+    loss_weight: float = 2.0,
+    close_probability_threshold: float = 0.01,
+    close_probability_weight: float = 2.0,
+    value_rollout_candidates: int = 2,
+    value_rollout_max_moves: int = 200,
 ):
     if num_games <= 0:
         raise ValueError("num_games must be greater than zero.")
@@ -190,6 +245,13 @@ def generate_training_data(
             mine_count,
             seed=rng.randrange(2**63),
             game_id=index,
+            bot_factory=bot_factory,
+            max_samples_per_phase=max_samples_per_phase,
+            loss_weight=loss_weight,
+            close_probability_threshold=close_probability_threshold,
+            close_probability_weight=close_probability_weight,
+            value_rollout_candidates=value_rollout_candidates,
+            value_rollout_max_moves=value_rollout_max_moves,
         )
         full_dataset.extend(game_steps)
 
@@ -310,15 +372,6 @@ def _is_revealed_clue(cell: Cell) -> bool:
     return isinstance(cell, int) and 0 <= cell <= 8
 
 
-def _safe_hidden_moves(game: MinesweeperGame):
-    return [
-        (x, y)
-        for y in range(game.height)
-        for x in range(game.width)
-        if game.visible_map[y][x] == "-" and game.mine_map[y][x] != "M"
-    ]
-
-
 def _game_phase(game: MinesweeperGame) -> str:
     safe_cell_count = game.width * game.height - game.mine_count
     progress = 1.0 - (game.remaining_cells / safe_cell_count)
@@ -327,3 +380,128 @@ def _game_phase(game: MinesweeperGame) -> str:
     if progress < 2 / 3:
         return "middle"
     return "late"
+
+
+class _UniformSafetyModel:
+    def predict(self, board, verbose: int = 0):
+        import numpy as np
+
+        return np.full((*board.shape[:3], 1), 0.5, dtype=np.float32)
+
+
+def _default_bot_factory(width: int, height: int, mine_count: int):
+    from minesweeper_ml.bots import MLMinesweeperBot
+
+    return MLMinesweeperBot(
+        width,
+        height,
+        _UniformSafetyModel(),
+        mine_count=mine_count,
+        cnn_input=True,
+    )
+
+
+def multitask_dataset_to_arrays(training_dataset):
+    import numpy as np
+
+    features, safety_targets, safety_masks = dataset_to_arrays(
+        training_dataset
+    )
+    height, width = safety_targets.shape[1:3]
+    value_targets = np.asarray(
+        [
+            [
+                [[value] for value in row]
+                for row in sample.get(
+                    "value_targets",
+                    [[0] * width for _ in range(height)],
+                )
+            ]
+            for sample in training_dataset
+        ],
+        dtype=np.float32,
+    )
+    value_masks = np.asarray(
+        [
+            [
+                [[value] for value in row]
+                for row in sample.get(
+                    "value_mask",
+                    [[0] * width for _ in range(height)],
+                )
+            ]
+            for sample in training_dataset
+        ],
+        dtype=np.float32,
+    )
+    return (
+        features,
+        {
+            "safety": safety_targets,
+            "value": value_targets,
+        },
+        {
+            "safety": safety_masks,
+            "value": value_masks,
+        },
+        np.asarray(
+            [
+                sample.get("trajectory_weight", 1.0)
+                for sample in training_dataset
+            ],
+            dtype=np.float32,
+        ),
+    )
+
+
+def evaluate_candidate_values(
+    game: MinesweeperGame,
+    candidates,
+    *,
+    bot_factory: Callable[[int, int, int], object],
+    max_candidates: int,
+    max_moves: int,
+):
+    if max_candidates < 0 or max_moves <= 0:
+        raise ValueError("value rollout limits must be non-negative.")
+    targets = [
+        [0 for _ in range(game.width)]
+        for _ in range(game.height)
+    ]
+    mask = [
+        [0 for _ in range(game.width)]
+        for _ in range(game.height)
+    ]
+    for x, y in tuple(dict.fromkeys(candidates))[:max_candidates]:
+        if (
+            not 0 <= x < game.width
+            or not 0 <= y < game.height
+            or game.visible_map[y][x] != "-"
+            or game.mine_map[y][x] == "M"
+        ):
+            continue
+        rollout = game.clone()
+        rollout.open_cell(x, y)
+        rollout_bot = bot_factory(
+            game.width,
+            game.height,
+            game.mine_count,
+        )
+        if hasattr(rollout_bot, "use_candidate_value"):
+            rollout_bot.use_candidate_value = False
+        for _ in range(max_moves):
+            if rollout.state != GameState.IN_PROGRESS:
+                break
+            move = rollout_bot.get_next_move(
+                copy.deepcopy(rollout.visible_map)
+            )
+            if (
+                move is None
+                or rollout.visible_map[move[1]][move[0]] != "-"
+            ):
+                rollout.state = GameState.STOPPED
+                break
+            rollout.open_cell(*move)
+        targets[y][x] = int(rollout.state == GameState.WON)
+        mask[y][x] = 1
+    return targets, mask

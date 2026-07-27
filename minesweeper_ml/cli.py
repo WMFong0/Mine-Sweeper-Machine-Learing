@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import random
 import statistics
 import time
@@ -25,6 +26,7 @@ DEFAULTS = {
     "epochs": 50,
     "seed": 42,
     "eval_games": 100,
+    "dev_games": 500,
 }
 
 SMOKE_DEFAULTS = {
@@ -35,6 +37,7 @@ SMOKE_DEFAULTS = {
     "epochs": 1,
     "seed": 42,
     "eval_games": 2,
+    "dev_games": 2,
 }
 
 
@@ -131,6 +134,7 @@ def play_ml_bot_game(
     mine_count: int = 15,
     move_delay: float = 1.0,
     seed: int | None = None,
+    bot_options: dict | None = None,
 ) -> None:
     game = MinesweeperGame(
         width=width,
@@ -140,13 +144,9 @@ def play_ml_bot_game(
         first_safe=True,
     )
 
-    bot = MLMinesweeperBot(
-        width,
-        height,
-        model,
-        mine_count=mine_count,
-        cnn_input=True,
-    )
+    options = {"mine_count": mine_count, "cnn_input": True}
+    options.update(bot_options or {})
+    bot = MLMinesweeperBot(width, height, model, **options)
     print("Bot making initial move at (0,0).")
     game.open_cell(0, 0)
 
@@ -179,6 +179,7 @@ def evaluate_ml_bot_games(
     mine_count: int = 15,
     num_games: int = 100,
     seed: int = 42,
+    bot_options: dict | None = None,
 ):
     if num_games <= 0:
         raise ValueError("num_games must be greater than zero.")
@@ -197,6 +198,9 @@ def evaluate_ml_bot_games(
         },
         "constraint_search_nodes": 0,
         "constraint_overflows": 0,
+        "lookahead_decisions": 0,
+        "lookahead_search_nodes": 0,
+        "lookahead_budget_exhaustions": 0,
         "median_uncertain_move_ms": 0.0,
         "fallback_move_rate": 0.0,
     }
@@ -211,13 +215,9 @@ def evaluate_ml_bot_games(
             seed=rng.randrange(2**63),
             first_safe=True,
         )
-        bot = MLMinesweeperBot(
-            width,
-            height,
-            model,
-            mine_count=mine_count,
-            cnn_input=True,
-        )
+        options = {"mine_count": mine_count, "cnn_input": True}
+        options.update(bot_options or {})
+        bot = MLMinesweeperBot(width, height, model, **options)
         game.open_cell(0, 0)
         safe_moves = 1
 
@@ -242,6 +242,15 @@ def evaluate_ml_bot_games(
         ]
         summary["constraint_overflows"] += bot.strategy_stats[
             "constraint_overflows"
+        ]
+        summary["lookahead_decisions"] += bot.strategy_stats[
+            "lookahead_decisions"
+        ]
+        summary["lookahead_search_nodes"] += bot.strategy_stats[
+            "lookahead_search_nodes"
+        ]
+        summary["lookahead_budget_exhaustions"] += bot.strategy_stats[
+            "lookahead_budget_exhaustions"
         ]
         total_safe_moves += safe_moves
         if game.state == GameState.WON:
@@ -290,11 +299,25 @@ def print_evaluation_summary(summary) -> None:
     print(
         f"{summary['fallback_move_rate']:.2%} uncertain-move fallback rate"
     )
+    exhaustion_label = (
+        "budget exhaustion"
+        if summary["lookahead_budget_exhaustions"] == 1
+        else "budget exhaustions"
+    )
+    print(
+        f"{summary['lookahead_decisions']} lookahead decisions, "
+        f"{summary['lookahead_search_nodes']} lookahead search nodes, "
+        f"{summary['lookahead_budget_exhaustions']} {exhaustion_label}"
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = MinesweeperArgumentParser(description="Play or train the Minesweeper ML project.")
-    parser.add_argument("--mode", choices=["user", "train-cnn", "smoke"], default="user")
+    parser.add_argument(
+        "--mode",
+        choices=["user", "train-cnn", "train-upgrade", "smoke"],
+        default="user",
+    )
     parser.add_argument("--width", type=int)
     parser.add_argument("--height", type=int)
     parser.add_argument("--mines", type=int)
@@ -302,6 +325,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--eval-games", type=int, dest="eval_games")
+    parser.add_argument("--dev-games", type=int, dest="dev_games")
+    parser.add_argument("--teacher-model")
+    parser.add_argument("--model-out", default="minesweeper_upgraded.keras")
     return parser
 
 
@@ -314,6 +340,60 @@ def main() -> None:
 
     if args.mode == "user":
         play_user_game(args.width, args.height, args.mines)
+        return
+
+    if args.mode == "train-upgrade":
+        from minesweeper_ml.training import train_upgrade_pipeline
+
+        teacher_model = None
+        if args.teacher_model:
+            from tensorflow import keras
+
+            teacher_model = keras.models.load_model(args.teacher_model)
+        model, report, teacher_model = train_upgrade_pipeline(
+            width=args.width,
+            height=args.height,
+            mine_count=args.mines,
+            num_games=args.games,
+            epochs=args.epochs,
+            seed=args.seed,
+            development_games=args.dev_games,
+            teacher_model=teacher_model,
+        )
+        from minesweeper_ml.benchmark import compare_bot_factories
+
+        selected_options = report["selected"]["bot_options"]
+
+        def baseline_factory(width, height, mine_count):
+            return MLMinesweeperBot(
+                width,
+                height,
+                teacher_model,
+                mine_count=mine_count,
+                exact_lookahead=False,
+                symmetry_ensemble=False,
+                use_candidate_value=False,
+            )
+
+        def candidate_factory(width, height, mine_count):
+            return MLMinesweeperBot(
+                width,
+                height,
+                model,
+                **selected_options,
+            )
+
+        report["paired_benchmark"] = compare_bot_factories(
+            baseline_factory,
+            candidate_factory,
+            width=args.width,
+            height=args.height,
+            mine_count=args.mines,
+            num_games=args.eval_games,
+            seed=args.seed + 3,
+        )
+        model.save(args.model_out)
+        print(json.dumps(report, sort_keys=True))
         return
 
     model = train_cnn_bot(

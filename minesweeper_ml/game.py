@@ -146,6 +146,18 @@ class MinesweeperGame:
             return False
         return False
 
+    def clone(self) -> MinesweeperGame:
+        cloned = MinesweeperGame(
+            width=self.width,
+            height=self.height,
+            mine_count=self.mine_count,
+            mine_locations=self.mine_locations,
+        )
+        cloned.visible_map = [row[:] for row in self.visible_map]
+        cloned.remaining_cells = self.remaining_cells
+        cloned.state = self.state
+        return cloned
+
     def display_mine_map(self) -> None:
         print("current mine location", self.mine_locations)
         print("===" * 30)

@@ -40,6 +40,9 @@ class MineCountRequiringBot:
             "fallback": 0,
             "constraint_search_nodes": 0,
             "constraint_overflows": 0,
+            "lookahead_decisions": 4,
+            "lookahead_search_nodes": 123,
+            "lookahead_budget_exhaustions": 1,
         }
         self.last_move_strategy = None
 
@@ -67,6 +70,12 @@ class CliTest(unittest.TestCase):
 
         self.assertEqual(42, args.seed)
         self.assertEqual(100, args.eval_games)
+        self.assertEqual(500, args.dev_games)
+
+    def test_upgrade_mode_has_a_checkpoint_output(self):
+        args = build_parser().parse_args(["--mode", "train-upgrade"])
+
+        self.assertEqual("minesweeper_upgraded.keras", args.model_out)
 
     def test_smoke_mode_evaluates_two_seeded_games(self):
         args = build_parser().parse_args(["--mode", "smoke"])
@@ -147,6 +156,9 @@ class CliTest(unittest.TestCase):
             )
 
         self.assertEqual(1, summary["won"])
+        self.assertEqual(4, summary["lookahead_decisions"])
+        self.assertEqual(123, summary["lookahead_search_nodes"])
+        self.assertEqual(1, summary["lookahead_budget_exhaustions"])
 
     def test_bot_game_passes_mine_count_to_the_ml_bot(self):
         with (
@@ -175,6 +187,9 @@ class CliTest(unittest.TestCase):
                 "fallback": 1,
             },
             "constraint_overflows": 0,
+            "lookahead_decisions": 4,
+            "lookahead_search_nodes": 123,
+            "lookahead_budget_exhaustions": 1,
             "median_uncertain_move_ms": 1.25,
             "fallback_move_rate": 1 / 6,
         }
@@ -190,3 +205,8 @@ class CliTest(unittest.TestCase):
         self.assertIn("0 constraint overflows", output.getvalue())
         self.assertIn("1.25 ms median uncertain move", output.getvalue())
         self.assertIn("16.67% uncertain-move fallback rate", output.getvalue())
+        self.assertIn(
+            "4 lookahead decisions, 123 lookahead search nodes, "
+            "1 budget exhaustion",
+            output.getvalue(),
+        )
