@@ -1,6 +1,7 @@
 import unittest
 
 from minesweeper_ml.benchmark import (
+    evaluate_bot_factory,
     exact_mcnemar_p_value,
     paired_win_statistics,
 )
@@ -26,6 +27,35 @@ class PairedBenchmarkTest(unittest.TestCase):
         self.assertEqual(0.5, result["baseline_win_rate"])
         self.assertEqual(0.5, result["candidate_win_rate"])
         self.assertEqual(1.0, result["mcnemar_exact_p"])
+
+    def test_evaluation_reports_endgame_search_metrics(self):
+        class MetricBot:
+            last_move_strategy = None
+            strategy_stats = {
+                "lookahead_decisions": 3,
+                "lookahead_search_nodes": 234,
+                "lookahead_budget_exhaustions": 1,
+                "endgame_decisions": 2,
+                "endgame_search_nodes": 123,
+                "endgame_evaluated_states": 17,
+                "endgame_budget_exhaustions": 1,
+            }
+
+        summary, _ = evaluate_bot_factory(
+            lambda width, height, mines: MetricBot(),
+            width=2,
+            height=1,
+            mine_count=1,
+            layouts=[((1, 0),)],
+        )
+
+        self.assertEqual(2, summary["endgame_decisions"])
+        self.assertEqual(123, summary["endgame_search_nodes"])
+        self.assertEqual(17, summary["endgame_evaluated_states"])
+        self.assertEqual(1, summary["endgame_budget_exhaustions"])
+        self.assertEqual(3, summary["lookahead_decisions"])
+        self.assertEqual(234, summary["lookahead_search_nodes"])
+        self.assertEqual(1, summary["lookahead_budget_exhaustions"])
 
 
 if __name__ == "__main__":

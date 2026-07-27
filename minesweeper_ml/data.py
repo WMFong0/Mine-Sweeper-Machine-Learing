@@ -397,6 +397,7 @@ def _default_bot_factory(width: int, height: int, mine_count: int):
         height,
         _UniformSafetyModel(),
         mine_count=mine_count,
+        endgame_max_worlds=0,
         cnn_input=True,
     )
 
@@ -489,6 +490,8 @@ def evaluate_candidate_values(
         )
         if hasattr(rollout_bot, "use_candidate_value"):
             rollout_bot.use_candidate_value = False
+        if hasattr(rollout_bot, "endgame_max_worlds"):
+            rollout_bot.endgame_max_worlds = 0
         for _ in range(max_moves):
             if rollout.state != GameState.IN_PROGRESS:
                 break

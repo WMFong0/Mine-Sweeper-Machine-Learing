@@ -24,6 +24,9 @@ class LookaheadEvaluation:
     search_nodes: int
     budget_exhausted: bool
     valid: bool
+    safe_progress_probability: float = 0.0
+    expected_safe_cells: float = 0.0
+    clue_entropy: float = 0.0
 
 
 def poisson_binomial_distribution(
@@ -104,17 +107,28 @@ def evaluate_safe_click(
             budget_exhausted=context.budget_exhausted,
         )
 
+    remaining_work = max_total_search_nodes - search_nodes
+    if remaining_work <= 0:
+        return _invalid_evaluation(search_nodes, budget_exhausted=True)
     conditioned = infer_safe_click_outcomes(
         context,
         candidate,
         hidden_neighbors,
+        max_work_units=remaining_work,
     )
+    search_nodes += conditioned.work_units
+    if conditioned.budget_exhausted:
+        return _invalid_evaluation(search_nodes, budget_exhausted=True)
     if not conditioned.consistent:
         return _invalid_evaluation(search_nodes, budget_exhausted=False)
     conditioned_probabilities = conditioned.mine_probabilities
     outcome_distribution = conditioned.outcome_probabilities
     scored_cells = hidden_cells - {candidate}
     baseline_forced = _forced_cells(
+        scored_cells,
+        conditioned_probabilities,
+    )
+    baseline_safe = _safe_cells(
         scored_cells,
         conditioned_probabilities,
     )
@@ -127,6 +141,9 @@ def evaluate_safe_click(
     weighted_forced_cells = 0.0
     weighted_entropy_reduction = 0.0
     zero_region_mass = 0.0
+    safe_progress_mass = 0.0
+    weighted_safe_cells = 0.0
+    scored_outcomes: list[float] = []
 
     for mine_count, outcome_probability in sorted(
         outcome_distribution.items()
@@ -145,12 +162,19 @@ def evaluate_safe_click(
             outcome_probabilities,
         )
         newly_forced_count = len(outcome_forced - baseline_forced)
+        newly_safe_count = len(
+            _safe_cells(scored_cells, outcome_probabilities)
+            - baseline_safe
+        )
         entropy_reduction = baseline_entropy - _total_entropy(
             scored_cells,
             outcome_probabilities,
         )
         valid_outcome_mass += outcome_probability
+        scored_outcomes.append(outcome_probability)
         weighted_forced_cells += outcome_probability * newly_forced_count
+        weighted_safe_cells += outcome_probability * newly_safe_count
+        safe_progress_mass += outcome_probability * bool(newly_safe_count)
         weighted_entropy_reduction += (
             outcome_probability * entropy_reduction
         )
@@ -172,6 +196,14 @@ def evaluate_safe_click(
         search_nodes=search_nodes,
         budget_exhausted=False,
         valid=True,
+        safe_progress_probability=(
+            safe_progress_mass / valid_outcome_mass
+        ),
+        expected_safe_cells=weighted_safe_cells / valid_outcome_mass,
+        clue_entropy=_distribution_entropy(
+            scored_outcomes,
+            valid_outcome_mass,
+        ),
     )
 
 
@@ -228,11 +260,17 @@ def _evaluate_independent_safe_click(
         scored_cells,
         conditioned_probabilities,
     )
+    baseline_safe = _safe_cells(
+        scored_cells,
+        conditioned_probabilities,
+    )
     baseline_entropy = _total_entropy(
         scored_cells,
         conditioned_probabilities,
     )
     valid_mass = forced_mass = entropy_mass = zero_mass = 0.0
+    safe_progress_mass = safe_cell_mass = 0.0
+    scored_outcomes: list[float] = []
     for mine_count, probability in sorted(outcome_distribution.items()):
         if probability <= 0.0 or probability < min_outcome_probability:
             continue
@@ -270,8 +308,14 @@ def _evaluate_independent_safe_click(
             outcome.mine_probabilities,
         )
         forced = _forced_cells(scored_cells, probabilities)
+        newly_safe_count = len(
+            _safe_cells(scored_cells, probabilities) - baseline_safe
+        )
         valid_mass += probability
+        scored_outcomes.append(probability)
         forced_mass += probability * len(forced - baseline_forced)
+        safe_cell_mass += probability * newly_safe_count
+        safe_progress_mass += probability * bool(newly_safe_count)
         entropy_mass += probability * (
             baseline_entropy - _total_entropy(scored_cells, probabilities)
         )
@@ -289,6 +333,9 @@ def _evaluate_independent_safe_click(
         search_nodes=search_nodes,
         budget_exhausted=False,
         valid=True,
+        safe_progress_probability=safe_progress_mass / valid_mass,
+        expected_safe_cells=safe_cell_mass / valid_mass,
+        clue_entropy=_distribution_entropy(scored_outcomes, valid_mass),
     )
 
 
@@ -318,6 +365,17 @@ def _forced_cells(
     }
 
 
+def _safe_cells(
+    cells: set[Coordinate],
+    probabilities: dict[Coordinate, float],
+) -> set[Coordinate]:
+    return {
+        cell
+        for cell in cells
+        if probabilities[cell] <= _CERTAINTY_EPSILON
+    }
+
+
 def _total_entropy(
     cells: set[Coordinate],
     probabilities: dict[Coordinate, float],
@@ -334,6 +392,17 @@ def _binary_entropy(probability: float) -> float:
     return -(
         probability * math.log(probability)
         + (1.0 - probability) * math.log(1.0 - probability)
+    )
+
+
+def _distribution_entropy(
+    weights: list[float],
+    total_weight: float,
+) -> float:
+    return -sum(
+        probability * math.log(probability)
+        for weight in weights
+        if (probability := weight / total_weight) > 0.0
     )
 
 

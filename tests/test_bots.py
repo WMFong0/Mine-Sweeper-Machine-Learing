@@ -91,8 +91,50 @@ class MLMinesweeperBotTest(unittest.TestCase):
         self.assertEqual(0.75, bot.model_prior_strength)
         self.assertEqual(0.0025, bot.tie_margin)
         self.assertEqual(4, bot.lookahead_max_candidates)
-        self.assertEqual(100_000, bot.lookahead_max_nodes)
+        self.assertEqual(25_000, bot.lookahead_max_nodes)
         self.assertEqual(1e-6, bot.lookahead_min_outcome_probability)
+        self.assertTrue(bot.exact_lookahead)
+        self.assertEqual(256, bot.endgame_max_worlds)
+        self.assertEqual(100_000, bot.endgame_max_nodes)
+
+    def test_complete_constraint_boxes_ignore_biased_model_priors(self):
+        visible_map = [
+            [1, "-", "-"],
+            ["-", "-", "-"],
+        ]
+        model = ScoreMapPredictionModel(
+            [
+                [0.5, 0.98, 0.5],
+                [0.50, 0.02, 0.5],
+            ]
+        )
+        bot = MLMinesweeperBot(
+            width=3,
+            height=2,
+            ml_model=model,
+            lookahead_max_candidates=0,
+        )
+
+        bot.get_next_move(visible_map)
+
+        probabilities = dict(bot.last_decision.mine_probabilities)
+        self.assertAlmostEqual(1.0 / 3.0, probabilities[(1, 0)])
+        self.assertAlmostEqual(1.0 / 3.0, probabilities[(0, 1)])
+        self.assertAlmostEqual(1.0 / 3.0, probabilities[(1, 1)])
+
+    def test_small_complete_position_uses_exact_endgame_search(self):
+        bot = MLMinesweeperBot(
+            width=3,
+            height=1,
+            ml_model=ScoreMapPredictionModel([[0.9, 0.5, 0.1]]),
+            mine_count=1,
+        )
+
+        move = bot.get_next_move([["-", "-", "-"]])
+
+        self.assertEqual((0, 0), move)
+        self.assertEqual(1, bot.strategy_stats["endgame_decisions"])
+        self.assertGreater(bot.strategy_stats["endgame_search_nodes"], 0)
 
     def test_combines_model_confidence_with_clue_safety(self):
         model = ScoreMapPredictionModel(
@@ -291,6 +333,70 @@ class MLMinesweeperBotTest(unittest.TestCase):
 
         self.assertEqual((1, 0), move)
         self.assertEqual(1, bot.strategy_stats["lookahead_decisions"])
+
+    def test_pseq_prefers_safe_progress_before_expected_safe_count(self):
+        bot = MLMinesweeperBot(
+            width=2,
+            height=1,
+            ml_model=ScoreMapPredictionModel([[0.5, 0.5]]),
+        )
+        visible_map = [["-", "-"]]
+
+        with patch(
+            "minesweeper_ml.bots.evaluate_safe_click",
+            side_effect=[
+                _lookahead_evaluation(
+                    expected_forced_cells=0.5,
+                    safe_progress_probability=0.8,
+                    expected_safe_cells=0.5,
+                ),
+                _lookahead_evaluation(
+                    expected_forced_cells=4.0,
+                    safe_progress_probability=0.7,
+                    expected_safe_cells=4.0,
+                ),
+            ],
+        ):
+            move = bot._select_posterior_move(
+                {(0, 0): 0.1, (1, 0): 0.1},
+                visible_map=visible_map,
+                deduced_mines=set(),
+                constraints=[],
+                hidden_cells={(0, 0), (1, 0)},
+                model_mine_probabilities={(0, 0): 0.5, (1, 0): 0.5},
+                remaining_mines=None,
+            )
+
+        self.assertEqual((0, 0), move)
+
+    def test_pseq_precedes_the_learned_candidate_value_tie_break(self):
+        bot = MLMinesweeperBot(
+            width=2,
+            height=1,
+            ml_model=ScoreMapPredictionModel([[0.5, 0.5]]),
+            value_tie_margin=0.0,
+        )
+        visible_map = [["-", "-"]]
+
+        with patch(
+            "minesweeper_ml.bots.evaluate_safe_click",
+            side_effect=[
+                _lookahead_evaluation(safe_progress_probability=0.8),
+                _lookahead_evaluation(safe_progress_probability=0.2),
+            ],
+        ):
+            move = bot._select_posterior_move(
+                {(0, 0): 0.1, (1, 0): 0.1},
+                visible_map=visible_map,
+                deduced_mines=set(),
+                constraints=[],
+                hidden_cells={(0, 0), (1, 0)},
+                model_mine_probabilities={(0, 0): 0.5, (1, 0): 0.5},
+                remaining_mines=None,
+                candidate_values={(0, 0): 0.1, (1, 0): 0.9},
+            )
+
+        self.assertEqual((0, 0), move)
 
     def test_lookahead_uses_entropy_then_zero_region_to_break_ties(self):
         bot = MLMinesweeperBot(
@@ -526,11 +632,11 @@ class MLMinesweeperBotTest(unittest.TestCase):
         )
 
         self.assertEqual((2, 2), baseline.get_next_move(visible_map))
-        self.assertEqual((4, 3), lookahead.get_next_move(visible_map))
+        self.assertEqual((4, 2), lookahead.get_next_move(visible_map))
         self.assertEqual(1, lookahead.strategy_stats["lookahead_decisions"])
-        self.assertEqual(
-            0,
+        self.assertGreater(
             lookahead.strategy_stats["lookahead_search_nodes"],
+            0,
         )
 
     def test_value_head_reorders_only_posterior_tied_candidates(self):
@@ -623,6 +729,7 @@ class MLMinesweeperBotTest(unittest.TestCase):
             height=2,
             ml_model=model,
             max_constraint_nodes=5,
+            uniform_constraint_posterior=False,
         )
         visible_map = [
             ["-", "-", 0, 0, 0, "-", "-"],
@@ -661,7 +768,12 @@ class MLMinesweeperBotTest(unittest.TestCase):
                 [0.10, 0.10, 0.10, 0.10],
             ]
         )
-        bot = MLMinesweeperBot(width=4, height=2, ml_model=model)
+        bot = MLMinesweeperBot(
+            width=4,
+            height=2,
+            ml_model=model,
+            uniform_constraint_posterior=False,
+        )
         visible_map = [
             ["-", "-", "-", "-"],
             [1, "-", "-", "-"],
@@ -710,6 +822,9 @@ def _lookahead_evaluation(
     expected_forced_cells=0.0,
     expected_entropy_reduction=0.0,
     zero_region_probability=0.0,
+    safe_progress_probability=0.0,
+    expected_safe_cells=0.0,
+    clue_entropy=0.0,
     search_nodes=10,
     budget_exhausted=False,
     valid=True,
@@ -721,4 +836,7 @@ def _lookahead_evaluation(
         search_nodes=search_nodes,
         budget_exhausted=budget_exhausted,
         valid=valid,
+        safe_progress_probability=safe_progress_probability,
+        expected_safe_cells=expected_safe_cells,
+        clue_entropy=clue_entropy,
     )

@@ -67,6 +67,24 @@ class SafeClickOutcomeInference:
     outcome_probabilities: dict[int, float]
     mine_probabilities_by_outcome: dict[int, dict[Coordinate, float]]
     consistent: bool
+    work_units: int = 0
+    budget_exhausted: bool = False
+
+
+class _WorkBudgetExceeded(RuntimeError):
+    pass
+
+
+@dataclass
+class _WorkBudget:
+    limit: int
+    used: int = 0
+
+    def consume(self, units: int) -> None:
+        if units > self.limit - self.used:
+            self.used = self.limit
+            raise _WorkBudgetExceeded
+        self.used += units
 
 
 def build_constraint_boxes(constraints: list[Constraint]) -> list[ConstraintBox]:
@@ -420,22 +438,30 @@ def build_constraint_context(
             **context_options,
         )
 
+    if remaining_mines is None:
+        return ConstraintInferenceContext(
+            mine_probabilities=local_probabilities,
+            consistent=True,
+            globally_coupled=False,
+            overflowed_boxes=0,
+            search_nodes=search_nodes,
+            budget_exhausted=False,
+            complete=True,
+            **context_options,
+        )
+
     provisional = ConstraintInferenceContext(
         mine_probabilities={},
         consistent=True,
-        globally_coupled=remaining_mines is not None,
+        globally_coupled=True,
         overflowed_boxes=0,
         search_nodes=search_nodes,
         budget_exhausted=False,
         complete=True,
         **context_options,
     )
-    conditioned = _infer_conditioned(
-        provisional,
-        candidate=None,
-        query_cells=frozenset(),
-    )
-    if not conditioned.consistent:
+    global_probabilities = _global_mine_probabilities(provisional)
+    if global_probabilities is None:
         return ConstraintInferenceContext(
             mine_probabilities={},
             consistent=False,
@@ -447,13 +473,9 @@ def build_constraint_context(
             **context_options,
         )
     return ConstraintInferenceContext(
-        mine_probabilities=(
-            conditioned.mine_probabilities
-            if remaining_mines is not None
-            else local_probabilities
-        ),
+        mine_probabilities=global_probabilities,
         consistent=True,
-        globally_coupled=remaining_mines is not None,
+        globally_coupled=True,
         overflowed_boxes=0,
         search_nodes=search_nodes,
         budget_exhausted=False,
@@ -466,18 +488,162 @@ def infer_safe_click_outcomes(
     context: ConstraintInferenceContext,
     candidate: Coordinate,
     query_cells: frozenset[Coordinate],
+    *,
+    max_work_units: int | None = None,
 ) -> SafeClickOutcomeInference:
+    if max_work_units is not None and max_work_units <= 0:
+        raise ValueError("max_work_units must be greater than zero.")
     if (
         not context.consistent
         or not context.complete
         or candidate not in context.hidden_cells
     ):
         return SafeClickOutcomeInference({}, {}, {}, False)
-    return _infer_conditioned(
-        context,
-        candidate=candidate,
-        query_cells=query_cells & context.hidden_cells,
+    budget = (
+        _WorkBudget(max_work_units)
+        if max_work_units is not None
+        else None
     )
+    try:
+        result = _infer_conditioned(
+            context,
+            candidate=candidate,
+            query_cells=query_cells & context.hidden_cells,
+            work_budget=budget,
+        )
+    except _WorkBudgetExceeded:
+        return SafeClickOutcomeInference(
+            {}, {}, {}, False, budget.used, True
+        )
+    return SafeClickOutcomeInference(
+        result.mine_probabilities,
+        result.outcome_probabilities,
+        result.mine_probabilities_by_outcome,
+        result.consistent,
+        budget.used if budget is not None else 0,
+        False,
+    )
+
+
+def count_legal_worlds(context: ConstraintInferenceContext) -> int:
+    if not context.consistent or not context.complete:
+        return 0
+    total_counts = {0: 1}
+    for enumeration in context.enumerations:
+        local_counts: dict[int, int] = {}
+        for assignment in enumeration.assignments:
+            local_counts[assignment.mine_count] = (
+                local_counts.get(assignment.mine_count, 0) + 1
+            )
+        total_counts = _convolve_count_distributions(
+            total_counts,
+            local_counts,
+        )
+
+    unconstrained_count = len(
+        context.hidden_cells - context.constrained_cells
+    )
+    if context.remaining_mines is None:
+        return sum(total_counts.values()) * (1 << unconstrained_count)
+    return sum(
+        ways
+        * math.comb(
+            unconstrained_count,
+            context.remaining_mines - constrained_mines,
+        )
+        for constrained_mines, ways in total_counts.items()
+        if 0
+        <= context.remaining_mines - constrained_mines
+        <= unconstrained_count
+    )
+
+
+def _global_mine_probabilities(
+    context: ConstraintInferenceContext,
+) -> dict[Coordinate, float] | None:
+    remaining_mines = context.remaining_mines
+    if remaining_mines is None:
+        raise ValueError("Global probabilities require a mine budget.")
+    enumerations = context.enumerations
+    prefixes: list[dict[int, float]] = [{0: 1.0}]
+    for enumeration in enumerations:
+        prefixes.append(
+            _convolve_count_distributions(
+                prefixes[-1],
+                enumeration.weight_by_mine_count,
+            )
+        )
+    suffixes: list[dict[int, float]] = [
+        {} for _ in range(len(enumerations) + 1)
+    ]
+    suffixes[-1] = {0: 1.0}
+    for index in range(len(enumerations) - 1, -1, -1):
+        suffixes[index] = _convolve_count_distributions(
+            enumerations[index].weight_by_mine_count,
+            suffixes[index + 1],
+        )
+
+    unconstrained = context.hidden_cells - context.constrained_cells
+    unconstrained_count = len(unconstrained)
+
+    def completion_weight(constrained_mines: int) -> int:
+        unconstrained_mines = remaining_mines - constrained_mines
+        return (
+            math.comb(unconstrained_count, unconstrained_mines)
+            if 0 <= unconstrained_mines <= unconstrained_count
+            else 0
+        )
+
+    total_weight = sum(
+        weight * completion_weight(constrained_mines)
+        for constrained_mines, weight in prefixes[-1].items()
+    )
+    if total_weight <= 0.0:
+        return None
+
+    probabilities: dict[Coordinate, float] = {}
+    for index, enumeration in enumerate(enumerations):
+        outside = _convolve_count_distributions(
+            prefixes[index],
+            suffixes[index + 1],
+        )
+        for cell, mine_weights in (
+            enumeration.mine_weight_by_cell_and_count.items()
+        ):
+            probabilities[cell] = sum(
+                mine_weight
+                * outside_weight
+                * completion_weight(local_mines + outside_mines)
+                for local_mines, mine_weight in mine_weights.items()
+                for outside_mines, outside_weight in outside.items()
+            ) / total_weight
+
+    if unconstrained_count:
+        unconstrained_probability = sum(
+            weight
+            * completion_weight(constrained_mines)
+            * (remaining_mines - constrained_mines)
+            for constrained_mines, weight in prefixes[-1].items()
+        ) / (total_weight * unconstrained_count)
+        probabilities.update(
+            dict.fromkeys(unconstrained, unconstrained_probability)
+        )
+    return probabilities
+
+
+def _convolve_count_distributions(
+    first: dict[int, int | float],
+    second: dict[int, int | float],
+):
+    combined = {}
+    for first_count, first_weight in first.items():
+        for second_count, second_weight in second.items():
+            total_count = first_count + second_count
+            combined[total_count] = (
+                combined.get(total_count, 0)
+                + first_weight * second_weight
+            )
+    return combined
 
 
 def _infer_conditioned(
@@ -485,32 +651,55 @@ def _infer_conditioned(
     *,
     candidate: Coordinate | None,
     query_cells: frozenset[Coordinate],
+    work_budget: _WorkBudget | None = None,
 ) -> SafeClickOutcomeInference:
     components = [
-        _box_component(enumeration, query_cells, candidate)
+        _box_component(
+            enumeration,
+            query_cells,
+            candidate,
+            work_budget=work_budget,
+        )
         for enumeration in context.enumerations
     ]
-    components.extend(
-        _cell_component(
-            cell,
-            (
-                0.5
-                if context.remaining_mines is not None
-                else context.model_mine_probabilities.get(cell, 0.5)
-            ),
-            context.prior_strength,
-            cell in query_cells,
-            cell == candidate,
+    unconstrained = context.hidden_cells - context.constrained_cells
+    if context.remaining_mines is not None:
+        queried = frozenset(
+            (unconstrained & query_cells) - {candidate}
         )
-        for cell in sorted(
-            context.hidden_cells - context.constrained_cells,
-            key=lambda cell: (cell[1], cell[0]),
+        unqueried = frozenset(
+            unconstrained - queried - {candidate}
         )
-    )
+        components.extend(
+            _group_component(cells, queried=is_queried)
+            for cells, is_queried in (
+                (queried, True),
+                (unqueried, False),
+            )
+            if cells
+        )
+    else:
+        components.extend(
+            _cell_component(
+                cell,
+                context.model_mine_probabilities.get(cell, 0.5),
+                context.prior_strength,
+                cell in query_cells,
+                cell == candidate,
+            )
+            for cell in sorted(
+                unconstrained,
+                key=lambda cell: (cell[1], cell[0]),
+            )
+        )
     prefixes = [{(0, 0): 1.0}]
     for distribution, _ in components:
         prefixes.append(
-            _convolve_joint_distributions(prefixes[-1], distribution)
+            _convolve_joint_distributions(
+                prefixes[-1],
+                distribution,
+                work_budget=work_budget,
+            )
         )
     suffixes = [None] * (len(components) + 1)
     suffixes[-1] = {(0, 0): 1.0}
@@ -518,6 +707,7 @@ def _infer_conditioned(
         suffixes[index] = _convolve_joint_distributions(
             components[index][0],
             suffixes[index + 1],
+            work_budget=work_budget,
         )
 
     outcome_weights: dict[int, float] = {}
@@ -541,15 +731,24 @@ def _infer_conditioned(
         outside = _convolve_joint_distributions(
             prefixes[index],
             suffixes[index + 1],
+            work_budget=work_budget,
         )
+        local_results = {}
         for cell, local_mine_distribution in local_mine_distributions.items():
-            for (
-                total_mines,
-                query_mines,
-            ), weight in _convolve_joint_distributions(
-                local_mine_distribution,
-                outside,
-            ).items():
+            distribution_key = tuple(
+                sorted(local_mine_distribution.items())
+            )
+            if distribution_key not in local_results:
+                local_results[distribution_key] = (
+                    _convolve_joint_distributions(
+                        local_mine_distribution,
+                        outside,
+                        work_budget=work_budget,
+                    )
+                )
+            for (total_mines, query_mines), weight in (
+                local_results[distribution_key].items()
+            ):
                 if (
                     query_mines in mine_numerators
                     and (
@@ -589,10 +788,14 @@ def _box_component(
     enumeration: BoxEnumeration,
     query_cells: frozenset[Coordinate],
     candidate: Coordinate | None,
+    *,
+    work_budget: _WorkBudget | None = None,
 ) -> tuple[
     dict[tuple[int, int], float],
     dict[Coordinate, dict[tuple[int, int], float]],
 ]:
+    if work_budget is not None:
+        work_budget.consume(len(enumeration.assignments))
     variable_indexes = {
         cell: index
         for index, cell in enumerate(enumeration.variables)
@@ -656,10 +859,40 @@ def _cell_component(
     )
 
 
+def _group_component(
+    cells: frozenset[Coordinate],
+    *,
+    queried: bool,
+) -> tuple[
+    dict[tuple[int, int], int],
+    dict[Coordinate, dict[tuple[int, int], int]],
+]:
+    cell_count = len(cells)
+    distribution = {
+        (mine_count, mine_count if queried else 0): math.comb(
+            cell_count,
+            mine_count,
+        )
+        for mine_count in range(cell_count + 1)
+    }
+    per_cell_distribution = {
+        (mine_count, mine_count if queried else 0): math.comb(
+            cell_count - 1,
+            mine_count - 1,
+        )
+        for mine_count in range(1, cell_count + 1)
+    }
+    return distribution, dict.fromkeys(cells, per_cell_distribution)
+
+
 def _convolve_joint_distributions(
     first: dict[tuple[int, int], float],
     second: dict[tuple[int, int], float],
+    *,
+    work_budget: _WorkBudget | None = None,
 ) -> dict[tuple[int, int], float]:
+    if work_budget is not None:
+        work_budget.consume(len(first) * len(second))
     combined: dict[tuple[int, int], float] = {}
     for (
         first_mines,

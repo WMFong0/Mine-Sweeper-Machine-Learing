@@ -6,6 +6,7 @@ import unittest
 from minesweeper_ml.constraints import (
     build_constraint_context,
     build_constraint_boxes,
+    count_legal_worlds,
     enumerate_constraint_box,
     infer_safe_click_outcomes,
     infer_mine_probabilities,
@@ -91,6 +92,43 @@ class ConstraintBoxTest(unittest.TestCase):
         self.assertAlmostEqual(0.0, result.mine_probabilities[last])
         self.assertAlmostEqual(0.0, result.mine_probabilities[unconstrained])
         self.assertFalse(result.budget_exhausted)
+
+    def test_counts_complete_worlds_across_boxes_and_unconstrained_cells(self):
+        first, second = (0, 0), (1, 0)
+        unconstrained = {(3, 0), (4, 0)}
+        hidden_cells = {first, second, *unconstrained}
+        context = build_constraint_context(
+            [(frozenset({first, second}), 1)],
+            hidden_cells=hidden_cells,
+            model_mine_probabilities={cell: 0.5 for cell in hidden_cells},
+            remaining_mines=2,
+            prior_strength=0.0,
+            max_search_nodes=1_000,
+        )
+
+        self.assertEqual(4, count_legal_worlds(context))
+
+    def test_global_marginals_preserve_box_weights_and_combinatorics(self):
+        first, second = (0, 0), (1, 0)
+        outside = {(3, 0), (4, 0)}
+        hidden_cells = {first, second, *outside}
+        context = build_constraint_context(
+            [(frozenset({first, second}), 1)],
+            hidden_cells=hidden_cells,
+            model_mine_probabilities={
+                first: 0.1,
+                second: 0.9,
+                **{cell: 0.5 for cell in outside},
+            },
+            remaining_mines=2,
+            prior_strength=1.0,
+            max_search_nodes=1_000,
+        )
+
+        self.assertAlmostEqual(0.01 / 0.82, context.mine_probabilities[first])
+        self.assertAlmostEqual(0.81 / 0.82, context.mine_probabilities[second])
+        for cell in outside:
+            self.assertAlmostEqual(0.5, context.mine_probabilities[cell])
 
     def test_total_search_budget_stops_conditional_inference(self):
         cells = {(0, 0), (1, 0), (3, 0), (4, 0)}
