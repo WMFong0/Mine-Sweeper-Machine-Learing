@@ -1,23 +1,30 @@
-# Minesweeper Machine Learning
+# RESULT / EVALUATION
 
-Refactored Minesweeper and ML training code split out of the original Colab export.
+A win means the bot safely finishes the entire map. Every generated and
+evaluated board opens `(0, 0)` first, and mine generation protects only that
+cell.
 
-## Layout
+| Paired evaluation | Baseline | Candidate | Outcome |
+| --- | ---: | ---: | --- |
+| 5,000 boards, 10x10 with 15 mines | Hybrid: 69.12% | Constraint boxes: 80.86% | +11.74 points, McNemar `p=1.64e-70` |
+| 5,000 untouched boards, 10x10 with 15 mines | Constraint boxes: 80.50% | Posterior lookahead: 81.74% | +1.24 points, McNemar `p=0.04287` |
+| 200 Expert boards, neutral CNN | Previous Expert profile: 46.5% | Strict PSEQ profile: 49.0% | Provisional +2.5 points |
+| 200 untouched Expert boards, neutral CNN | PSEQ-D256: 33.0% | Consensus: 32.5% | Consensus lost by one game, `p=1.0` |
+| 500 untouched 10x10 boards, neutral CNN | PSEQ-D256: 85.2% | Consensus: 83.8% | PSEQ-D256 won by seven games |
 
-- `mine_sweeper_machine_learning.py` - thin launcher
-- `minesweeper_ml/game.py` - board state, mines, flags, reveal logic
-- `minesweeper_ml/bots.py` - rule-based and ML bot decision logic
-- `minesweeper_ml/constraints.py` - weighted constraint boxes and global mine inference
-- `minesweeper_ml/lookahead.py` - exact and control hypothetical clue scoring
-- `minesweeper_ml/data.py` - on-policy trajectories and rollout labels
-- `minesweeper_ml/models.py` - single- and dual-head convolutional models
-- `minesweeper_ml/symmetry.py` - D4 augmentation and test-time ensembling
-- `minesweeper_ml/training.py` - warm-start multitask training tournament
-- `minesweeper_ml/benchmark.py` - paired completed-map evaluation
-- `minesweeper_ml/cli.py` - command-line modes
-- `tests/` - smoke tests for game, data, CLI, and bot rules
+The validated 5,000-board posterior-lookahead run had `7.68 ms` median and
+`16.18 ms` p95 uncertain-move latency. The Expert profile deliberately spends
+more search work: its provisional 200-board run increased median latency from
+`17.9 ms` to `127.2 ms`.
 
-## Setup
+PSEQ-D256 remains the default because the equal-vote consensus policy did not
+win either untouched comparison. Expert and consensus figures above are
+strategy-only neutral-CNN experiments; a trained Expert checkpoint still needs
+a large paired validation run.
+
+# HOW TO RUN
+
+Create the environment on Windows:
 
 ```powershell
 python -m venv .venv
@@ -25,165 +32,39 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-## Run
-
 Play manually:
 
 ```powershell
 python .\mine_sweeper_machine_learning.py --mode user --width 5 --height 5 --mines 5
 ```
 
-Run a tiny training smoke test:
+Run a fast smoke check:
 
 ```powershell
 python .\mine_sweeper_machine_learning.py --mode smoke
 ```
 
-Run the full CNN path:
+Train and evaluate the basic CNN:
 
 ```powershell
 python .\mine_sweeper_machine_learning.py --mode train-cnn --games 50000 --epochs 50 --seed 42 --eval-games 100
 ```
 
-Run the complete win-rate experiment:
+Run the complete training, tuning, and paired-evaluation pipeline:
 
 ```powershell
-python .\mine_sweeper_machine_learning.py --mode train-upgrade --games 50000 --epochs 50 --dev-games 500 --eval-games 5000 --model-out minesweeper_upgraded.keras
+python .\mine_sweeper_machine_learning.py --mode train-upgrade --games 50000 --epochs 50 --dev-games 500 --eval-games 5000 --seed 42 --model-out minesweeper_upgraded.keras
 ```
 
-`train-upgrade` first creates or loads a safety teacher, generates on-policy
-uncertain states, trains both CNN architectures with D4 augmentation, tunes
-value tie-breaking on the development boards, and performs one paired final
-comparison. Pass `--teacher-model existing.keras` to start from an existing
-checkpoint.
+Add `--teacher-model existing.keras` to continue from an existing checkpoint.
 
-## Tests
+Run all tests:
 
 ```powershell
 python -m unittest discover -s tests
 ```
 
-## Bot Strategy
-
-The rule-based bot now applies basic Minesweeper deductions before using a risk fallback:
-
-- number cells whose remaining mine count is `0` mark adjacent hidden cells safe
-- number cells whose remaining mine count equals adjacent hidden cells mark those cells as mines
-- subset constraints can infer extra safe cells or mines
-- fallback picks the hidden cell with the lowest estimated mine risk from visible numbered constraints
-
-The ML bot uses deterministic safe moves first. It then groups hidden frontier
-cells into connected constraint boxes, enumerates layouts that satisfy every
-visible clue, and gives every complete legal fixed-mine layout equal weight.
-Box mine-count distributions are coupled to unconstrained cells through the
-known total mine count. CNN probabilities remain available for incomplete
-searches and final ties, but do not override an exact CSP posterior.
-
-The bot opens from a shortlist based on the lowest posterior mine probability.
-Its risk margin shrinks as the board approaches the endgame. For up to four
-near-equal cells, exact PSEQ lookahead ranks candidates by probability of
-producing a guaranteed-safe move, expected guaranteed-safe cells, and clue
-entropy. Learned candidate value and CNN safety resolve remaining ties.
-Large, dense boards (at least 400 cells and 18% mines) automatically use a
-strict minimum-risk filter and a 100,000-work-unit PSEQ budget. This Expert
-profile leaves smaller-board defaults unchanged; explicit `tie_margin` and
-`lookahead_max_nodes` values always override it.
-
-Candidate-safe clue distributions and clue-conditioned marginals come from the
-joint legal assignments, so mutually exclusive cells are never treated as
-independent. When at most 256 complete legal worlds remain, bounded recursive
-endgame search selects the move with the highest probability of eventually
-finishing the whole map.
-
-Set `decision_policy="consensus"` to replace recursive endgame search with an
-equal-vote cross-check. It averages normalized candidate ranks from exact CSP
-survival, PSEQ safe-progress, expected-safe-cell and clue-entropy signals, CNN
-safety, the optional learned value head, and local information gain. Constant
-signals abstain, and incomplete PSEQ evaluations do not vote.
-
-Base enumeration is limited to 250,000 search nodes per box. Lookahead uses
-a deterministic 25,000-work-unit budget per move, or 100,000 for the automatic
-Expert profile; endgame search has its own 100,000-unit budget. Either layer
-falls back deterministically if a hypothesis is inconsistent, overflows, or
-exhausts its budget. An oversized or inconsistent base box still falls back to
-the previous 60% model / 40% clue scorer. Set
-`uniform_constraint_posterior=False`, `exact_lookahead=False`, and
-`endgame_max_worlds=0` to reproduce the legacy strategy.
-
-In the baseline 5,000-board comparison on 10x10 boards with 15 mines, the
-previous hybrid won 3,456 games and the constraint-box strategy won 4,043:
-69.12% versus 80.86%. The paired
-McNemar exact p-value was `1.64e-70`. The selected CNN prior strength was `0.5`;
-the run had zero solver overflows, zero fallback moves, and a 0.657 ms median
-uncertain-move latency after model prediction caching. Move sources were
-131,492 deductions, 5,491 constraint-box choices, and 2,216 unconstrained-cell
-choices.
-
-The previous posterior-lookahead configuration was tuned separately on 500 development
-boards, selecting a `0.0025` risk margin with CNN prior strength `0.75`. On
-5,000 untouched paired boards, current constraint boxes won 4,025 games and
-lookahead won 4,087: 80.50% versus 81.74%, a 1.24 percentage-point gain.
-Lookahead won 485 boards that the baseline lost, while the baseline won 423
-that lookahead lost; the McNemar exact p-value was `0.04287`.
-
-Median uncertain-move latency was 7.68 ms and p95 was 16.18 ms on the CPU
-Colab run. There were no base solver overflows or fallback moves and one shared
-lookahead-budget exhaustion across all 5,000 games.
-
-The uniform-CSP, exact-PSEQ, and recursive-endgame combination is implemented
-but has not yet passed the 500-development / 5,000-paired acceptance gate with
-the trained checkpoint. Evaluation summaries report lookahead and endgame
-decisions, work, states, and budget exhaustions for that comparison.
-
-In a provisional strategy-only Expert run with neutral CNN output, the
-pre-profile defaults won 93 of 200 paired boards and the automatic Expert
-profile won 98: 46.5% versus 49.0%. Median uncertain-move latency increased
-from 17.9 ms to 127.2 ms. This small run selected the profile; it is not a
-substitute for the larger paired benchmark with a trained Expert checkpoint.
-
-Consensus beat PSEQ-D256 42 to 38 on its 100-board Expert development set, but
-lost the untouched 200-board comparison 65 to 66 (`p=1.0`). On 500 untouched
-10x10 boards it won 419 games versus PSEQ-D256's 426. It therefore remains an
-explicit experimental policy rather than the default.
-
-## Training Data
-
-Every generated and evaluated game opens `(0, 0)` first. Mine generation
-protects only that cell; every other cell, including its neighbors, remains
-eligible for a mine.
-
-After the first click, every trajectory move comes from an
-`MLMinesweeperBot`. The generator never filters candidates with `mine_map`, so
-the policy can lose exactly as it can in deployment. States are captured
-immediately before uncertain decisions, with up to four samples per game phase.
-Lost games and posterior gaps at or below `0.01` receive configurable training
-weight multipliers.
-
-The mine map is consulted only after candidate selection to create safety
-labels and bounded counterfactual value labels. A value label is active only
-for a candidate known retrospectively to be safe, and equals one only when
-opening that candidate and continuing with the constraint policy completes the
-whole board. Training and test data remain split by whole mine layout.
-
-The multitask model receives a ten-channel spatial board and predicts both cell
-safety and `P(whole-board win | safe click)`. Safety loss is restricted to the
-hidden frontier and class-balanced; value loss is restricted to evaluated safe
-candidates. Square boards train on all eight rotations/reflections and inference
-can average those eight aligned predictions in one batch.
-
-Two trunks are trained under identical data and seeds:
-
-- `local_3x3`: the existing 32/64/32 spatial stack
-- `paper_5x5`: a wider 64/128/64 stack with 5x5 kernels
-
-Development selection uses completed-map wins, then average safe moves, then
-latency. The final strategy is accepted only for at least a one-percentage-point
-paired gain, exact McNemar `p < 0.05`, and median uncertain-move latency below
-100 ms.
-
-## Google Colab
-
-The Colab workflow needs two code cells and no embedded `BUNDLE_B64`.
+Google Colab needs only these two code cells:
 
 ```python
 !git clone --branch codex/posterior-lookahead https://github.com/WMFong0/Mine-Sweeper-Machine-Learing.git
@@ -194,3 +75,42 @@ The Colab workflow needs two code cells and no embedded `BUNDLE_B64`.
 ```python
 !python mine_sweeper_machine_learning.py --mode train-upgrade --games 50000 --epochs 50 --dev-games 500 --eval-games 5000 --seed 42 --model-out /content/minesweeper_upgraded.keras
 ```
+
+# THE ALGORITHM BEHIND
+
+1. **Safe opening:** always open `(0, 0)` first. Mines may occupy every other
+   cell, including its neighbors.
+2. **Deterministic deductions:** apply direct clue rules and subset constraints
+   until no guaranteed-safe cell or guaranteed mine remains.
+3. **Constraint boxes:** connect unresolved frontier cells that share visible
+   clues, then enumerate only mine assignments satisfying every clue.
+4. **Global probability:** combine each box's mine-count distribution with the
+   known total mine count and the combinatorial distribution of unconstrained
+   hidden cells. Complete legal layouts receive equal weight.
+5. **PSEQ selection:** keep the lowest posterior-risk candidates, then rank up
+   to four cells by probability of producing a guaranteed-safe move (`S`),
+   expected guaranteed-safe cells (`E`), and clue entropy (`Q`).
+6. **Expert profile:** boards with at least 400 cells and 18% mine density use
+   a strict minimum-risk filter and a `100,000`-work-unit PSEQ budget. Smaller
+   boards use `25,000`.
+7. **D256 endgame:** when at most 256 legal worlds remain, recursively branch
+   over legal clue outcomes and choose the move maximizing the probability of
+   finishing the whole map. Search is capped at `100,000` nodes.
+8. **CNN assistance:** CNN safety and the optional
+   `P(finish the board | safe click)` value head break unresolved ties and
+   support deterministic fallbacks. D4 rotations/reflections can be averaged
+   in one inference batch.
+9. **Consensus experiment:** `decision_policy="consensus"` disables D256 and
+   averages normalized candidate ranks from CSP survival, PSEQ `S/E/Q`, CNN
+   safety, the value head, and local information gain. Constant or incomplete
+   signals abstain. This policy is available for comparison but is not the
+   default.
+10. **Bounded fallback:** each constraint box is capped at 250,000 search
+    nodes. Inconsistent or oversized searches fall back deterministically to
+    the existing 60% model / 40% clue-risk scorer.
+
+Training data is generated by the deployed constraint bot, not by consulting
+the hidden map for move selection. States are captured before uncertain moves;
+lost games and close guesses are oversampled. The mine map is used only after
+selection to create safety and counterfactual value labels. Training and test
+sets are split by complete mine layout.
