@@ -84,6 +84,10 @@ Its risk margin shrinks as the board approaches the endgame. For up to four
 near-equal cells, exact PSEQ lookahead ranks candidates by probability of
 producing a guaranteed-safe move, expected guaranteed-safe cells, and clue
 entropy. Learned candidate value and CNN safety resolve remaining ties.
+Large, dense boards (at least 400 cells and 18% mines) automatically use a
+strict minimum-risk filter and a 100,000-work-unit PSEQ budget. This Expert
+profile leaves smaller-board defaults unchanged; explicit `tie_margin` and
+`lookahead_max_nodes` values always override it.
 
 Candidate-safe clue distributions and clue-conditioned marginals come from the
 joint legal assignments, so mutually exclusive cells are never treated as
@@ -91,12 +95,13 @@ independent. When at most 256 complete legal worlds remain, bounded recursive
 endgame search selects the move with the highest probability of eventually
 finishing the whole map.
 
-Base enumeration is limited to 250,000 search nodes per box. Lookahead shares
-a separate deterministic 25,000-work-unit budget per move; endgame search has
-its own 100,000-unit budget. Either layer falls back deterministically if a
-hypothesis is inconsistent, overflows, or exhausts its budget. An oversized or
-inconsistent base box still falls back to the previous 60% model / 40% clue
-scorer. Set `uniform_constraint_posterior=False`, `exact_lookahead=False`, and
+Base enumeration is limited to 250,000 search nodes per box. Lookahead uses
+a deterministic 25,000-work-unit budget per move, or 100,000 for the automatic
+Expert profile; endgame search has its own 100,000-unit budget. Either layer
+falls back deterministically if a hypothesis is inconsistent, overflows, or
+exhausts its budget. An oversized or inconsistent base box still falls back to
+the previous 60% model / 40% clue scorer. Set
+`uniform_constraint_posterior=False`, `exact_lookahead=False`, and
 `endgame_max_worlds=0` to reproduce the legacy strategy.
 
 In the baseline 5,000-board comparison on 10x10 boards with 15 mines, the
@@ -123,6 +128,12 @@ The uniform-CSP, exact-PSEQ, and recursive-endgame combination is implemented
 but has not yet passed the 500-development / 5,000-paired acceptance gate with
 the trained checkpoint. Evaluation summaries report lookahead and endgame
 decisions, work, states, and budget exhaustions for that comparison.
+
+In a provisional strategy-only Expert run with neutral CNN output, the
+pre-profile defaults won 93 of 200 paired boards and the automatic Expert
+profile won 98: 46.5% versus 49.0%. Median uncertain-move latency increased
+from 17.9 ms to 127.2 ms. This small run selected the profile; it is not a
+substitute for the larger paired benchmark with a trained Expert checkpoint.
 
 ## Training Data
 

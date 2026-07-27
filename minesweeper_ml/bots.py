@@ -205,9 +205,9 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
         model_prior_strength: float = 0.75,
         uniform_constraint_posterior: bool = True,
         model_weight: float = 0.6,
-        tie_margin: float = 0.0025,
+        tie_margin: float | None = None,
         lookahead_max_candidates: int = 4,
-        lookahead_max_nodes: int = 25_000,
+        lookahead_max_nodes: int | None = None,
         lookahead_min_outcome_probability: float = 1e-6,
         exact_lookahead: bool = True,
         endgame_max_worlds: int = 256,
@@ -218,6 +218,17 @@ class MLMinesweeperBot(RuleBasedMinesweeperBot):
         cnn_input: bool = True,
     ):
         super().__init__(width, height)
+        large_dense_board = (
+            mine_count is not None
+            and width * height >= 400
+            and mine_count / (width * height) >= 0.18
+        )
+        tie_margin = (
+            1e-9 if large_dense_board else 0.0025
+        ) if tie_margin is None else tie_margin
+        lookahead_max_nodes = (
+            100_000 if large_dense_board else 25_000
+        ) if lookahead_max_nodes is None else lookahead_max_nodes
         if not 0.0 <= model_weight <= 1.0:
             raise ValueError("model_weight must be between zero and one.")
         if tie_margin < 0.0:

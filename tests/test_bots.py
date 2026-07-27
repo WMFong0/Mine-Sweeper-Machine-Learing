@@ -97,6 +97,34 @@ class MLMinesweeperBotTest(unittest.TestCase):
         self.assertEqual(256, bot.endgame_max_worlds)
         self.assertEqual(100_000, bot.endgame_max_nodes)
 
+    def test_large_dense_board_uses_expert_pseq_defaults(self):
+        bot = MLMinesweeperBot(
+            width=30,
+            height=16,
+            mine_count=99,
+            ml_model=ScoreMapPredictionModel(
+                [[0.5 for _ in range(30)] for _ in range(16)]
+            ),
+        )
+
+        self.assertEqual(1e-9, bot.tie_margin)
+        self.assertEqual(100_000, bot.lookahead_max_nodes)
+
+    def test_explicit_pseq_settings_override_expert_defaults(self):
+        bot = MLMinesweeperBot(
+            width=30,
+            height=16,
+            mine_count=99,
+            ml_model=ScoreMapPredictionModel(
+                [[0.5 for _ in range(30)] for _ in range(16)]
+            ),
+            tie_margin=0.01,
+            lookahead_max_nodes=50_000,
+        )
+
+        self.assertEqual(0.01, bot.tie_margin)
+        self.assertEqual(50_000, bot.lookahead_max_nodes)
+
     def test_complete_constraint_boxes_ignore_biased_model_priors(self):
         visible_map = [
             [1, "-", "-"],
