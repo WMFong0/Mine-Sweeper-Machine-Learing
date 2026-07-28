@@ -12,6 +12,21 @@ cell.
 | 200 untouched Expert boards, neutral CNN | PSEQ-D256: 33.0% | Consensus: 32.5% | Consensus lost by one game, `p=1.0` |
 | 500 untouched 10x10 boards, neutral CNN | PSEQ-D256: 85.2% | Consensus: 83.8% | PSEQ-D256 won by seven games |
 
+**PSEQ-D256 replay across all historical layouts**
+
+| Board | Completed-map wins | Win rate | Median uncertain move | p95 uncertain move |
+| --- | ---: | ---: | ---: | ---: |
+| 10x10, 15 mines | 832/1,000 | **83.2%** | 24.91 ms | 26.54 ms |
+| Intermediate, 16x16 with 40 mines | 162/200 | **81.0%** | 38.52 ms | 78.41 ms |
+| Expert, 30x16 with 99 mines, untouched | 200/500 | **40.0%** | 113.76 ms | 548.25 ms |
+| Expert development layouts | 55/150 | **36.67%** | 103.18 ms | 544.62 ms |
+
+The untouched Expert replay used three historical seed batches and reached the
+target high-quality solver range at exactly 40.0%. It made 202 D256 decisions,
+with 52 endgame budget exhaustions and 12 constraint overflows. Development
+layouts remain separate from the untouched result and are not included in the
+40.0% rate.
+
 The validated 5,000-board posterior-lookahead run had `7.68 ms` median and
 `16.18 ms` p95 uncertain-move latency. The Expert profile deliberately spends
 more search work: its provisional 200-board run increased median latency from
