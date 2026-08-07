@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from minesweeper_ml.symmetry import (
+from minesweeper_ml.game import (
     augment_spatial_arrays,
     spatial_symmetries,
 )
@@ -102,8 +102,8 @@ def fit_safety_model(
 ):
     import numpy as np
 
-    from minesweeper_ml.data import dataset_to_arrays
-    from minesweeper_ml.models import build_cnn_model
+    from minesweeper_ml.training.data import dataset_to_arrays
+    from minesweeper_ml.training.models import build_cnn_model
 
     x_train, y_train, train_masks = dataset_to_arrays(train_dataset)
     x_test, y_test, test_masks = dataset_to_arrays(test_dataset)
@@ -161,8 +161,8 @@ def fit_multitask_model(
 ):
     import numpy as np
 
-    from minesweeper_ml.data import multitask_dataset_to_arrays
-    from minesweeper_ml.models import build_cnn_model
+    from minesweeper_ml.training.data import multitask_dataset_to_arrays
+    from minesweeper_ml.training.models import build_cnn_model
 
     train_arrays = multitask_dataset_to_arrays(train_dataset)
     test_arrays = multitask_dataset_to_arrays(test_dataset)
@@ -224,9 +224,9 @@ def train_upgrade_pipeline(
 ):
     import random
 
-    from minesweeper_ml.benchmark import evaluate_bot_factory
-    from minesweeper_ml.bots import MLMinesweeperBot
-    from minesweeper_ml.data import (
+    from minesweeper_ml.training.benchmark import evaluate_bot_factory
+    from minesweeper_ml.bot.bots import MLMinesweeperBot
+    from minesweeper_ml.training.data import (
         generate_training_data,
         split_dataset_by_game,
     )

@@ -4,16 +4,16 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Protocol
 
-from minesweeper_ml.consensus import average_algorithm_ranks
-from minesweeper_ml.constraints import (
+from minesweeper_ml.bot.consensus import average_algorithm_ranks
+from minesweeper_ml.game import (
     Constraint,
     build_constraint_context,
 )
-from minesweeper_ml.data import encode_board_features, encode_board_state
-from minesweeper_ml.endgame import solve_endgame
+from minesweeper_ml.training import encode_board_features, encode_board_state
+from minesweeper_ml.game import solve_endgame
 from minesweeper_ml.game import Cell, Coordinate
-from minesweeper_ml.lookahead import evaluate_safe_click
-from minesweeper_ml.symmetry import predict_spatial_maps
+from minesweeper_ml.bot.lookahead import evaluate_safe_click
+from minesweeper_ml.game import predict_spatial_maps
 
 
 class PredictionModel(Protocol):

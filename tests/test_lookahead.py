@@ -1,8 +1,8 @@
 import math
 import unittest
 
-from minesweeper_ml.constraints import build_constraint_context
-from minesweeper_ml.lookahead import (
+from minesweeper_ml.game import build_constraint_context
+from minesweeper_ml.bot import (
     evaluate_safe_click,
     poisson_binomial_distribution,
 )

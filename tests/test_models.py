@@ -3,7 +3,7 @@ from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from minesweeper_ml.models import build_cnn_model
+from minesweeper_ml.training import build_cnn_model
 
 
 class FakeTensor:

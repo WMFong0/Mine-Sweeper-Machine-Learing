@@ -390,7 +390,7 @@ class _UniformSafetyModel:
 
 
 def _default_bot_factory(width: int, height: int, mine_count: int):
-    from minesweeper_ml.bots import MLMinesweeperBot
+    from minesweeper_ml.bot.bots import MLMinesweeperBot
 
     return MLMinesweeperBot(
         width,

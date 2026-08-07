@@ -2,8 +2,8 @@ import random
 import unittest
 from unittest.mock import patch
 
-from minesweeper_ml.bots import MLMinesweeperBot, RuleBasedMinesweeperBot
-from minesweeper_ml.lookahead import LookaheadEvaluation
+from minesweeper_ml.bot import MLMinesweeperBot, RuleBasedMinesweeperBot
+from minesweeper_ml.bot import LookaheadEvaluation
 
 
 class SpatialPredictionModel:

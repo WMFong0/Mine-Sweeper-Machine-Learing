@@ -6,8 +6,8 @@ import random
 import statistics
 import time
 
-from minesweeper_ml.bots import MLMinesweeperBot
-from minesweeper_ml.data import (
+from minesweeper_ml.bot import MLMinesweeperBot
+from minesweeper_ml.training import (
     build_sample_weights,
     calculate_class_weights,
     dataset_to_arrays,
@@ -15,7 +15,7 @@ from minesweeper_ml.data import (
     split_dataset_by_game,
 )
 from minesweeper_ml.game import GameState, MinesweeperGame
-from minesweeper_ml.models import build_cnn_model
+from minesweeper_ml.training import build_cnn_model
 
 
 LEGACY_STRATEGY_OPTIONS = {
@@ -393,7 +393,7 @@ def main() -> None:
             development_games=args.dev_games,
             teacher_model=teacher_model,
         )
-        from minesweeper_ml.benchmark import compare_bot_factories
+        from minesweeper_ml.training import compare_bot_factories
 
         selected_options = report["selected"]["bot_options"]
 

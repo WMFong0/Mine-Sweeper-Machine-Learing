@@ -1,8 +1,8 @@
 import sys
 import unittest
 
-from minesweeper_ml.constraints import build_constraint_context
-from minesweeper_ml.endgame import solve_endgame
+from minesweeper_ml.game import build_constraint_context
+from minesweeper_ml.game import solve_endgame
 
 
 class ExactEndgameTest(unittest.TestCase):

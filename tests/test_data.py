@@ -1,7 +1,7 @@
 from collections import Counter
 import unittest
 
-from minesweeper_ml.data import (
+from minesweeper_ml.training import (
     _default_bot_factory,
     build_sample_weights,
     calculate_class_weights,
@@ -41,7 +41,7 @@ class TrainingDataTest(unittest.TestCase):
         self.assertEqual([1, 0, 1, 1], encode_ground_truth_map(ground_truth_map))
 
     def test_dataset_to_arrays_rejects_an_empty_dataset(self):
-        from minesweeper_ml.data import dataset_to_arrays
+        from minesweeper_ml.training import dataset_to_arrays
 
         with self.assertRaises(ValueError):
             dataset_to_arrays([])
@@ -184,7 +184,7 @@ class TrainingDataTest(unittest.TestCase):
         self.assertTrue(all(sum(cell_features) == 1 for cell_features in features[0]))
 
     def test_dataset_arrays_include_spatial_labels_and_masks(self):
-        from minesweeper_ml.data import dataset_to_arrays
+        from minesweeper_ml.training import dataset_to_arrays
 
         sample = {
             "board_state": [[1, "-"], ["-", "-"]],

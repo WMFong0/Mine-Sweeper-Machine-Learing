@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from minesweeper_ml.constraints import (
+from minesweeper_ml.game import (
     Constraint,
     ConstraintInferenceContext,
     build_constraint_context,

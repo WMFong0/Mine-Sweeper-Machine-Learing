@@ -1,6 +1,6 @@
 import unittest
 
-from minesweeper_ml.consensus import average_algorithm_ranks
+from minesweeper_ml.bot import average_algorithm_ranks
 
 
 class AverageAlgorithmRanksTest(unittest.TestCase):

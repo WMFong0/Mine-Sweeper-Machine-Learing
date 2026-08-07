@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from minesweeper_ml.symmetry import (
+from minesweeper_ml.game import (
     inverse_transform_spatial,
     predict_spatial_maps,
     spatial_symmetries,

@@ -3,7 +3,7 @@ import math
 import random
 import unittest
 
-from minesweeper_ml.constraints import (
+from minesweeper_ml.game import (
     build_constraint_context,
     build_constraint_boxes,
     count_legal_worlds,

@@ -1,6 +1,6 @@
 import unittest
 
-from minesweeper_ml.benchmark import (
+from minesweeper_ml.training import (
     evaluate_bot_factory,
     exact_mcnemar_p_value,
     paired_win_statistics,
