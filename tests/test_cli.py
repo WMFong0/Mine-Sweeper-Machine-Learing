@@ -48,6 +48,7 @@ class MineCountRequiringBot:
             "endgame_search_nodes": 456,
             "endgame_evaluated_states": 78,
             "endgame_budget_exhaustions": 1,
+            "consensus_decisions": 5,
         }
         self.last_move_strategy = None
 
@@ -178,6 +179,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(456, summary["endgame_search_nodes"])
         self.assertEqual(78, summary["endgame_evaluated_states"])
         self.assertEqual(1, summary["endgame_budget_exhaustions"])
+        self.assertEqual(5, summary["consensus_decisions"])
 
     def test_bot_game_passes_mine_count_to_the_ml_bot(self):
         with (
@@ -213,6 +215,7 @@ class CliTest(unittest.TestCase):
             "endgame_search_nodes": 456,
             "endgame_evaluated_states": 78,
             "endgame_budget_exhaustions": 1,
+            "consensus_decisions": 5,
             "median_uncertain_move_ms": 1.25,
             "fallback_move_rate": 1 / 6,
         }
@@ -238,3 +241,4 @@ class CliTest(unittest.TestCase):
             "78 states, 1 budget exhaustion",
             output.getvalue(),
         )
+        self.assertIn("5 consensus decisions", output.getvalue())

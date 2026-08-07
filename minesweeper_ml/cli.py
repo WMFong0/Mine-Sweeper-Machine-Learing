@@ -212,6 +212,7 @@ def evaluate_ml_bot_games(
         "endgame_search_nodes": 0,
         "endgame_evaluated_states": 0,
         "endgame_budget_exhaustions": 0,
+        "consensus_decisions": 0,
         "median_uncertain_move_ms": 0.0,
         "fallback_move_rate": 0.0,
     }
@@ -268,6 +269,7 @@ def evaluate_ml_bot_games(
             "endgame_search_nodes",
             "endgame_evaluated_states",
             "endgame_budget_exhaustions",
+            "consensus_decisions",
         ):
             summary[metric] += bot.strategy_stats.get(metric, 0)
         total_safe_moves += safe_moves
@@ -339,6 +341,7 @@ def print_evaluation_summary(summary) -> None:
         f"{summary['endgame_budget_exhaustions']} "
         f"{endgame_exhaustion_label}"
     )
+    print(f"{summary['consensus_decisions']} consensus decisions")
 
 
 def build_parser() -> argparse.ArgumentParser:

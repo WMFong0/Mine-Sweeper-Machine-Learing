@@ -39,6 +39,7 @@ class PairedBenchmarkTest(unittest.TestCase):
                 "endgame_search_nodes": 123,
                 "endgame_evaluated_states": 17,
                 "endgame_budget_exhaustions": 1,
+                "consensus_decisions": 7,
             }
 
         summary, _ = evaluate_bot_factory(
@@ -56,6 +57,7 @@ class PairedBenchmarkTest(unittest.TestCase):
         self.assertEqual(3, summary["lookahead_decisions"])
         self.assertEqual(234, summary["lookahead_search_nodes"])
         self.assertEqual(1, summary["lookahead_budget_exhaustions"])
+        self.assertEqual(7, summary["consensus_decisions"])
 
 
 if __name__ == "__main__":
