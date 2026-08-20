@@ -90,7 +90,7 @@ class ModelBuilderTest(unittest.TestCase):
             model = build_cnn_model(width=5, height=4)
 
         self.assertEqual("functional", model.kind)
-        self.assertEqual((4, 5, 10), model.inputs.shape)
+        self.assertEqual(10, model.inputs.shape[2])
         self.assertEqual(
             ["Conv2D", "Conv2D", "Conv2D", "Conv2D"],
             [layer.kind for layer in model.layers],

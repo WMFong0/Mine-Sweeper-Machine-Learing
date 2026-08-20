@@ -36,7 +36,7 @@ def build_cnn_model(
         raise ValueError("value_loss_weight must be greater than zero.")
     from tensorflow import keras
 
-    inputs = keras.Input(shape=(height, width, 10))
+    inputs = keras.Input(shape=(None, None, 10))
     filters, kernel_size = CNN_ARCHITECTURES[architecture]
     hidden = inputs
     for filter_count in filters:

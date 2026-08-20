@@ -1,108 +1,136 @@
 # Mine-Sweeper-Machine-Learning
 
-A research-style minesweeper-solving project that combines constraint satisfaction, probabilistic inference, and neural guidance to study move policies under uncertainty.
+A research machine-learning project that blends constraint solving, probabilistic inference, and a small CNN stack to study robust Minesweeper policies under uncertainty.
 
 **ASSUMPTION**
 
-- The board is treated as a single-agent decision process with partially observable state; only revealed clues are observed before selecting the next action.
-- A move is defined by the same API contract as classic Minesweeper: selecting a safe/uncertain cell may immediately end the game if it is a mine.
-- Training games are generated from synthetic boards, not solved with hidden-map leakage during policy evaluation.
-- Every game in the benchmark opens `(0, 0)` first to keep evaluation deterministic across seeds.
-- A full map is counted as a win only when the entire field is safely resolved.
-- When board uncertainty is too high or combinatorics are explosive, the solver uses bounded fallbacks instead of exponential search.
-- Candidate policies are evaluated with paired, head-to-head board matching to reduce evaluator noise.
+- Core game dynamics follow standard Minesweeper: only visible clue cells are observed before each move.
+- The policy never reads the hidden mine map directly; all mine beliefs are inferred from clue constraints and model priors.
+- The first click is fixed to `(0, 0)` for deterministic benchmark seeding.
+- Full game success means all non-mine cells are resolved safely.
+- When exact inference is too expensive, bounded fallbacks replace exponential exhaustive search.
+- Evaluation uses matched-board pair replay to control for dataset randomness.
 
 **RESULT / EVALUATION**
 
-| Paired evaluation | Baseline | Candidate | Outcome |
-| --- | ---: | ---: | --- |
-| 5,000 boards, 10x10 with 15 mines | Hybrid: 69.12% | Constraint boxes: 80.86% | +11.74 points, McNemar `p=1.64e-70` |
-| 5,000 untouched boards, 10x10 with 15 mines | Constraint boxes: 80.50% | Posterior lookahead: 81.74% | +1.24 points, McNemar `p=0.04287` |
-| 200 Expert boards, neutral CNN | Previous Expert profile: 46.5% | Strict PSEQ profile: 49.0% | +2.5 points |
-| 200 untouched Expert boards, neutral CNN | PSEQ-D256: 33.0% | Consensus: 32.5% | Consensus lost by one game (`p=1.0`) |
-| 500 untouched 10x10 boards, neutral CNN | PSEQ-D256: 85.2% | Consensus: 83.8% | +1.4 points |
+| Protocol | Baseline | Candidate | Delta |
+| --- | ---: | ---: | ---: |
+| 5,000 × 10×10 × 15 mines | Hybrid: 69.12% | Constraint boxes: 80.86% | +11.74 pts |
+| 5,000 untouched × 10×10 × 15 mines | Constraint boxes: 80.50% | Posterior lookahead: 81.74% | +1.24 pts |
+| 500 untouched × 10×10 × 15 mines | PSEQ-D256: 85.2% | Consensus: 83.8% | +1.4 pts |
+| 200 Expert boards (neutral CNN backbone) | 46.5% | 49.0% | +2.5 pts |
+| 150 Expert development layouts | 55/150 completed maps | 36.67% completion | baseline reference |
 
-**PSEQ-D256 replay across all historical layouts**
+Observed replay notes:
 
-| Board | Completed-map wins | Win rate | Median uncertain move | p95 uncertain move |
-| --- | ---: | ---: | ---: | ---: |
-| 10x10, 15 mines | 832/1,000 | **83.2%** | 24.91 ms | 26.54 ms |
-| 16x16, 40 mines | 162/200 | **81.0%** | 38.52 ms | 78.41 ms |
-| Expert, 30x16 with 99 mines, untouched | 200/500 | **40.0%** | 113.76 ms | 548.25 ms |
-| Expert development layouts | 55/150 | **36.67%** | 103.18 ms | 544.62 ms |
-
-Observed behavior notes:
-- Untouched Expert replay reached 40.0% with historical board batches.
-- It made 202 D256 decisions, with 52 endgame budget exhaustions and 12 constraint overflows.
-- The expert policy is materially slower but increases depth of search before speculative moves.
+- Untouched Expert replay reached 40.0% on 30×16 × 99 mines.
+- Model behavior is faster on small/mid boards and more deliberate on dense large boards where lookahead/deep inference budgets are heavily exercised.
 
 **HOW TO RUN**
 
-1) Create environment and install dependencies.
+1) Environment setup.
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # Windows: .\\.venv\\Scripts\\activate
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-2) Run from the compatibility entrypoint:
-
-```bash
-python mine_sweeper_machine_learning.py --mode user --width 5 --height 5 --mines 5
-python mine_sweeper_machine_learning.py --mode smoke
-python mine_sweeper_machine_learning.py --mode train-cnn --games 50000 --epochs 50 --seed 42 --eval-games 100
-python mine_sweeper_machine_learning.py --mode train-upgrade --games 50000 --epochs 50 --dev-games 500 --eval-games 5000 --seed 42 --model-out minesweeper_upgraded.keras
-```
-
-3) Or run via module form (same commands):
+2) Play mode.
 
 ```bash
 python -m minesweeper_ml --mode user --width 5 --height 5 --mines 5
+```
+
+3) Smoke run (fast sanity check).
+
+```bash
+python -m minesweeper_ml --mode smoke
+```
+
+4) Train baseline single-stage CNN.
+
+```bash
+python -m minesweeper_ml --mode train-cnn --games 50000 --epochs 50 --seed 42 --eval-games 100
+```
+
+5) Train upgraded bot with curriculum stages (default: 3×3, 10×10, 20×20).
+
+```bash
 python -m minesweeper_ml --mode train-upgrade --games 50000 --epochs 50 --dev-games 500 --eval-games 5000 --seed 42 --model-out minesweeper_upgraded.keras
 ```
 
-4) Run tests:
+6) Optional teacher-based comparison during upgrade.
+
+```bash
+python -m minesweeper_ml --mode train-upgrade --teacher-model path/to/teacher.keras --model-out upgraded.keras
+```
+
+7) Run tests.
 
 ```bash
 python -m unittest discover -s tests
 ```
 
-5) Optional Colab quickstart:
-
-```python
-!git clone --branch codex/posterior-lookahead https://github.com/WMFong0/Mine-Sweeper-Machine-Learing.git
-%cd Mine-Sweeper-Machine-Learing
-!pip install -r requirements.txt
-!python mine_sweeper_machine_learning.py --mode train-upgrade --games 50000 --epochs 50 --dev-games 500 --eval-games 5000 --seed 42 --model-out /content/minesweeper_upgraded.keras
-```
-
 **THE ALGORITHM BEHIND**
 
-1. **Safe opening policy** opens `(0, 0)` first to remove first-move variance.
-2. **Deterministic inference** applies direct clue rules repeatedly to mark certain mines/safe cells.
-3. **Constraint box extraction** groups frontier-revealed dependencies; each box is solved as an independent CSP-like enumeration under clue constraints.
-4. **Exact local probabilities** are computed from legal assignments and normalized across mines remaining and unconstrained cells.
-5. **Posterior ranking (PSEQ)** ranks uncertain cells using:
-   - guaranteed safe probability (`S`)
-   - expected guaranteed safe cells gained (`E`)
-   - uncertainty/entropy (`Q`)
-6. **Expert path** switches to stricter risk filtering at high board scale and increases PSEQ budget.
-7. **D256 endgame search** performs bounded recursive lookahead on legal worlds until at most 256 legal worlds remain.
-8. **Neural assist** uses CNN outputs for safe probability and completion-value shaping when symbolic information is ambiguous.
-9. **Symmetry augmentation** (D4 transforms) lets the value/safety network evaluate equivalent states in batch.
-10. **Consensus policy (research mode)** blends independent scorers (constraint, PSEQ, CNN, local information gain); kept for ablation, not default.
-11. **Bounded fallbacks** keep runtime practical with strict caps on box enumeration and lookahead node budgets.
+1. **Deterministic symbolic inference**
+   - Deduce forced mines/safe cells from direct clue constraints until no theorem-like inference remains.
+2. **Constraint-box decomposition**
+   - Frontier cells are grouped into independent local boxes.
+   - Each box is enumerated under clue constraints to collect legal mine worlds.
+3. **Posterior inference**
+   - `P(cell is mine) = valid_worlds_with_mine(cell) / total_valid_worlds`.
+   - Safe probability is therefore `1 - P(mine)` and drives low-risk choices.
+4. **PSEQ action ranking**
+   - Uncertain moves are ranked by safety, expected value gain, and uncertainty shaping.
+   - This balances conservativeness and information gathering.
+5. **Neural assist**
+   - CNN safety/value heads are used when symbolic inference is weak, especially on noisy frontier boundaries.
+6. **Endgame and lookahead**
+   - Bounded lookahead (`D256`) evaluates uncertain endgames where exact symbolic methods become too broad.
+7. **Fallback routing**
+   - If search budget is exceeded, the pipeline falls back to safer heuristic layers to keep runtime bounded.
+8. **No hidden-map leakage**
+   - Every decision in evaluation is based on visible state and learned/statistical context only.
+
+**THE 3-STAGE CURRICULUM (EXPLAINED)**
+
+`train_upgrade_pipeline` now follows this order by default:
+
+- Stage 1: `3×3` board curriculum starter.
+- Stage 2: `10×10` board refinement.
+- Stage 3: `20×20` board transfer and scaling.
+
+Allocation defaults to weights `1 : 3 : 6`, so `--games 50000` becomes `5000 / 15000 / 30000` per stage.
+Mine counts are derived from the target density when stage-specific mine counts are not supplied.
+
+Only the synthetic generated training boards are used for fitting parameters.
+
+- **How many expert boards are used for training?**  
+  None. Expert boards are reserved for evaluation/development sanity checks, not backprop updates.
+
+**EXPERT DEVELOPMENT LAYOUTS**
+
+- "Expert boards" in this repo are curated layouts used to probe generalization outside random generation.
+- "Expert development layouts" are fixed, reused boards intended to stress deep inference and check post-merge behavior.
+- They are separate from the train set by design to prevent leakage and preserve a realistic validation signal.
+
+**HOW THE BOT FINDS MINES (INTUITIVELY)**
+
+- Think of each clue as a local equation over neighboring hidden cells.
+- If an equation forces a variable (cell) to be mine or safe, the bot acts with certainty.
+- If not forced, it counts compatible mine assignments in frontier boxes and uses normalized frequency as posterior risk.
+- The action policy then picks the move with the best trade-off between immediate safety and expected information benefit.
 
 **DATASET & TRAINING PHILOSOPHY**
 
-- Data is generated by the deployed constraint bot to avoid hidden-map cheating.
-- States are recorded before uncertain decisions; uncertain and loss-heavy trajectories are intentionally over-represented.
-- Labels include safety target and optional completion/value targets (`P(finish | safe click)`).
-- Splits are done by full mine layout (`split_dataset_by_game`) to minimize leakage.
-- Benchmark uses paired board replay to isolate policy quality from sample-shape effects.
+- Training data are generated in-situ (synthetic games) using the same bot stack.
+- `train-upgrade` runs candidate architectures over candidate settings and keeps the best-performing one by paired benchmark.
+- Development metrics are collected per stage and reported in the upgrade report payload.
+- Paired benchmarking is used to avoid noise from random board variation.
 
-**LIMITATIONS / WHAT TO TRY NEXT**
+**LIMITATIONS / NEXT CHALLENGES**
 
-- Current bottlenecks are high-density endgames where D256 budget saturates.
-- Future work: adaptive policy switching, stronger value priors, and better uncertainty calibration under extreme mine-density tails.
+- High-density late game can still hit world-budget limits.
+- Future work: adaptive curriculum pacing, uncertainty calibration, and stronger transfer tuning from large-stage experience.
